@@ -1,5 +1,6 @@
 const request = require('supertest');
 const { buildTestApp } = require('../helpers/buildTestApp');
+const { fakePngBuffer, fakeMp4Buffer, invalidMediaBuffer } = require('../helpers/mediaFixtures');
 
 async function registerUser(app, overrides = {}) {
   const payload = {
@@ -98,5 +99,103 @@ describe('User routes', () => {
     const usernames = byPrefix.body.data.users.map((u) => u.username);
     expect(usernames).toEqual(expect.arrayContaining(['ada', 'adele']));
     expect(usernames).not.toContain('bob');
+  });
+
+  describe('POST /api/v1/users/me/profile-photo', () => {
+    it('rejects unauthenticated upload attempts', async () => {
+      const { app } = buildTestApp();
+      const res = await request(app).post('/api/v1/users/me/profile-photo').attach('photo', fakePngBuffer(), 'photo.png');
+      expect(res.status).toBe(401);
+    });
+
+    it('uploads a new profile photo and updates profilePhotoUrl', async () => {
+      const { app } = buildTestApp();
+      const { accessToken } = await registerUser(app);
+
+      const res = await request(app)
+        .post('/api/v1/users/me/profile-photo')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .attach('photo', fakePngBuffer(), { filename: 'photo.png', contentType: 'image/png' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.profilePhotoUrl).toContain('profile-photos/');
+
+      const meRes = await request(app).get('/api/v1/users/me').set('Authorization', `Bearer ${accessToken}`);
+      expect(meRes.body.data.profilePhotoUrl).toBe(res.body.data.profilePhotoUrl);
+    });
+
+    it('requires a file to be attached', async () => {
+      const { app } = buildTestApp();
+      const { accessToken } = await registerUser(app);
+
+      const res = await request(app).post('/api/v1/users/me/profile-photo').set('Authorization', `Bearer ${accessToken}`);
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('INVALID_PROFILE_PHOTO');
+    });
+
+    it('rejects a video (profile photos are images only)', async () => {
+      const { app } = buildTestApp();
+      const { accessToken } = await registerUser(app);
+
+      const res = await request(app)
+        .post('/api/v1/users/me/profile-photo')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .attach('photo', fakeMp4Buffer(), { filename: 'clip.mp4', contentType: 'video/mp4' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('INVALID_PROFILE_PHOTO');
+    });
+
+    it('rejects content that does not match a real image signature, even with a spoofed extension/mimetype', async () => {
+      const { app } = buildTestApp();
+      const { accessToken } = await registerUser(app);
+
+      const res = await request(app)
+        .post('/api/v1/users/me/profile-photo')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .attach('photo', invalidMediaBuffer(), { filename: 'photo.png', contentType: 'image/png' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('INVALID_PROFILE_PHOTO');
+    });
+
+    it('rejects an oversized photo', async () => {
+      const { app } = buildTestApp(); // test env: IMAGE_MAX_BYTES=5000
+      const { accessToken } = await registerUser(app);
+
+      const res = await request(app)
+        .post('/api/v1/users/me/profile-photo')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .attach('photo', fakePngBuffer(6000), { filename: 'photo.png', contentType: 'image/png' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('PROFILE_PHOTO_TOO_LARGE');
+    });
+
+    it('deletes the previous photo from S3 only after the new one is safely committed', async () => {
+      const { app, fakeS3 } = buildTestApp();
+      const { accessToken } = await registerUser(app);
+
+      const first = await request(app)
+        .post('/api/v1/users/me/profile-photo')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .attach('photo', fakePngBuffer(), { filename: 'photo1.png', contentType: 'image/png' });
+      const oldUrl = first.body.data.profilePhotoUrl;
+      fakeS3.send.mockClear();
+
+      const second = await request(app)
+        .post('/api/v1/users/me/profile-photo')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .attach('photo', fakePngBuffer(), { filename: 'photo2.png', contentType: 'image/png' });
+
+      expect(second.status).toBe(200);
+      expect(second.body.data.profilePhotoUrl).not.toBe(oldUrl);
+
+      const calls = fakeS3.send.mock.calls.map((call) => call[0].constructor.name);
+      expect(calls).toEqual(['PutObjectCommand', 'DeleteObjectCommand']); // upload confirmed BEFORE the old one is removed
+      const deleteCall = fakeS3.send.mock.calls[1][0];
+      expect(oldUrl).toContain(deleteCall.input.Key);
+    });
   });
 });

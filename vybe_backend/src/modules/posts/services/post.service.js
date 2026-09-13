@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { PostNotFoundError } = require('../errors/post.errors');
+const { PostNotFoundError, PostValidationError } = require('../errors/post.errors');
 const { UserNotFoundError } = require('../../users/errors/user.errors');
 
 function isDuplicateKeyError(err) {
@@ -7,23 +7,46 @@ function isDuplicateKeyError(err) {
 }
 
 class PostService {
-  constructor(postRepository, userRepository, userStatsRepository, followRepository = null) {
+  constructor(postRepository, userRepository, userStatsRepository, postMediaStorage, followRepository = null) {
     this.postRepository = postRepository;
     this.userRepository = userRepository;
     this.userStatsRepository = userStatsRepository;
+    this.postMediaStorage = postMediaStorage;
     // Optional, wired in once the Follow module exists (phase 2) — see _isFollowing().
     this.followRepository = followRepository;
   }
 
-  async createPost({ authorId, text, imageUrl, clientRequestId }) {
-    const postData = { author: authorId, text, imageUrl: imageUrl || '', clientRequestId: clientRequestId || undefined };
-
+  /**
+   * `file` is the raw multer upload (req.file), optional. Media is uploaded
+   * to S3 BEFORE the post is created — only a confirmed upload is ever
+   * referenced by the DB (see phase-2 design discussion on safe ordering).
+   */
+  async createPost({ authorId, text, clientRequestId, file }) {
     if (clientRequestId) {
       const existing = await this.postRepository.findByAuthorAndClientRequestId(authorId, clientRequestId);
       if (existing) {
+        // A genuine replay never re-uploads — avoids both wasted storage and
+        // the (client-bug-only) risk of silently overwriting the original
+        // media with different bytes under the same key.
         return { post: existing, created: false };
       }
     }
+
+    let mediaUrl = null;
+    let mediaType = null;
+    if (file) {
+      const detected = this.postMediaStorage.validate(file.buffer, file.mimetype);
+      mediaUrl = await this.postMediaStorage.upload({
+        authorId,
+        buffer: file.buffer,
+        ext: detected.ext,
+        contentType: detected.contentType,
+        clientRequestId,
+      });
+      mediaType = detected.mediaType;
+    }
+
+    const postData = { author: authorId, text, mediaUrl, mediaType, clientRequestId: clientRequestId || undefined };
 
     const session = await mongoose.startSession();
     let post;
@@ -40,6 +63,9 @@ class PostService {
           return { post: existing, created: false };
         }
       }
+      if (mediaUrl) {
+        await this.postMediaStorage.deleteByUrl(mediaUrl); // avoid orphaning the upload we just made
+      }
       throw err;
     } finally {
       await session.endSession();
@@ -48,15 +74,45 @@ class PostService {
     return { post, created: true };
   }
 
-  async editPost({ postId, authorId, text, imageUrl }) {
+  async editPost({ postId, authorId, text, file }) {
+    if (text === undefined && !file) {
+      throw new PostValidationError('Provide text and/or media to update');
+    }
+
+    const existing = await this.postRepository.findOwnedById(postId, authorId);
+    if (!existing) {
+      // Fail fast and cheap — never spend an upload on a post the caller doesn't own.
+      throw new PostNotFoundError();
+    }
+
     const updates = {};
     if (text !== undefined) updates.text = text;
-    if (imageUrl !== undefined) updates.imageUrl = imageUrl;
+
+    if (file) {
+      const detected = this.postMediaStorage.validate(file.buffer, file.mimetype);
+      updates.mediaUrl = await this.postMediaStorage.upload({
+        authorId,
+        buffer: file.buffer,
+        ext: detected.ext,
+        contentType: detected.contentType,
+      });
+      updates.mediaType = detected.mediaType;
+    }
 
     const post = await this.postRepository.updateOwned(postId, authorId, updates);
     if (!post) {
+      // Lost a race (e.g. concurrently deleted) between our ownership check and the update.
+      if (updates.mediaUrl) {
+        await this.postMediaStorage.deleteByUrl(updates.mediaUrl);
+      }
       throw new PostNotFoundError();
     }
+
+    if (updates.mediaUrl && existing.mediaUrl) {
+      // Only now that the new URL is safely committed is it safe to remove the old one.
+      await this.postMediaStorage.deleteByUrl(existing.mediaUrl);
+    }
+
     return post;
   }
 

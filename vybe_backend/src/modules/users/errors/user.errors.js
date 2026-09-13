@@ -18,4 +18,16 @@ class UserNotFoundError extends UserError {
   }
 }
 
-module.exports = { UserError, UserNotFoundError };
+class InvalidProfilePhotoError extends UserError {
+  constructor(message = 'Unsupported or unrecognized image format') {
+    super('INVALID_PROFILE_PHOTO', 400, message);
+  }
+}
+
+class ProfilePhotoTooLargeError extends UserError {
+  constructor(maxBytes) {
+    super('PROFILE_PHOTO_TOO_LARGE', 400, `Profile photo exceeds the ${maxBytes}-byte limit`);
+  }
+}
+
+module.exports = { UserError, UserNotFoundError, InvalidProfilePhotoError, ProfilePhotoTooLargeError };

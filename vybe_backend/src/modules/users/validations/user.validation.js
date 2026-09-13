@@ -7,7 +7,6 @@ const usernameParamSchema = Joi.object({
 const updateProfileSchema = Joi.object({
   name: Joi.string().trim().max(100),
   bio: Joi.string().trim().max(300).allow(''),
-  avatarUrl: Joi.string().uri({ scheme: ['http', 'https'] }).allow(''),
   country: Joi.string().length(2).uppercase(),
   isPrivate: Joi.boolean(),
 }).min(1);

@@ -21,7 +21,7 @@ function toProfileDTO(user, stats, extra = {}) {
     name: user.name,
     username: user.username,
     bio: user.bio,
-    avatarUrl: user.avatarUrl,
+    profilePhotoUrl: user.profilePhotoUrl,
     country: user.country,
     isPrivate: user.isPrivate,
     followersCount: stats?.followersCount ?? 0,

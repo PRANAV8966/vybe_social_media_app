@@ -54,7 +54,7 @@ const userSchema = new Schema(
       maxlength: 300,
       default: '',
     },
-    avatarUrl: {
+    profilePhotoUrl: {
       type: String,
       default: '',
     },

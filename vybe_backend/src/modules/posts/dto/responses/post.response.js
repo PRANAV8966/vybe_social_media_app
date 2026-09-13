@@ -18,7 +18,7 @@ function toAuthorDTO(author) {
     id: author._id.toString(),
     username: author.username,
     name: author.name,
-    avatarUrl: author.avatarUrl,
+    profilePhotoUrl: author.profilePhotoUrl,
   };
 }
 
@@ -27,7 +27,8 @@ function toPostDTO(post) {
     id: post._id.toString(),
     author: toAuthorDTO(post.author),
     text: post.text,
-    imageUrl: post.imageUrl,
+    mediaUrl: post.mediaUrl,
+    mediaType: post.mediaType,
     likesCount: post.likesCount,
     isEdited: Boolean(post.editedAt),
     createdAt: post.createdAt,

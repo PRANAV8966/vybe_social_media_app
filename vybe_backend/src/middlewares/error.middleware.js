@@ -1,4 +1,5 @@
 const logger = require('../config/logger');
+const env = require('../config/env');
 
 /**
  * Catch-all for routes that don't match anything. Mounted after every
@@ -36,8 +37,24 @@ function finalErrorHandler(err, req, res, next) {
   }
 
   const code = (!isServerFault && err.code) || 'INTERNAL_ERROR';
-  const message = isServerFault ? 'Something went wrong. Please try again later.' : err.message || 'Request failed';
-  const details = !isServerFault && typeof err.toJSON === 'function' ? err.toJSON().details ?? null : null;
+
+  // Production hides the real 500 message/cause on purpose (an unexpected
+  // error is, by definition, one we haven't vetted for safe disclosure — it
+  // could be a raw driver/DB error quoting connection internals, as happened
+  // here). Every other environment shows the real thing, because a generic
+  // "something went wrong" in your own local dev logs helps nobody.
+  const message = isServerFault
+    ? env.isProduction
+      ? 'Something went wrong. Please try again later.'
+      : err.message || 'Unexpected error'
+    : err.message || 'Request failed';
+  const details = isServerFault
+    ? env.isProduction
+      ? null
+      : { name: err.name, stack: err.stack }
+    : typeof err.toJSON === 'function'
+      ? err.toJSON().details ?? null
+      : null;
 
   res.status(statusCode).json({
     success: false,

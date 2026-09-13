@@ -11,17 +11,9 @@ function validRegisterPayload(overrides = {}) {
   };
 }
 
-/** Pulls just the `refreshToken=...` cookie header (with attributes) out of a response, for reuse on the next request. */
-function extractRefreshCookieHeader(res) {
-  const setCookie = res.headers['set-cookie'] || [];
-  const found = setCookie.find((c) => c.startsWith('refreshToken='));
-  if (!found) return null;
-  return found.split(';')[0]; // "refreshToken=<value>"
-}
-
 describe('Auth routes', () => {
   describe('POST /api/v1/auth/register', () => {
-    it('registers a new user and returns an access token + refresh cookie', async () => {
+    it('registers a new user and returns an access token + refresh token in the body', async () => {
       const { app } = buildTestApp();
       const res = await request(app).post('/api/v1/auth/register').send(validRegisterPayload());
 
@@ -29,8 +21,10 @@ describe('Auth routes', () => {
       expect(res.body.success).toBe(true);
       expect(res.body.data.user.email).toBe('ada@example.com');
       expect(res.body.data.user.passwordHash).toBeUndefined();
+      expect(res.body.data.user.googleId).toBeUndefined(); // local account — no provider id to echo back
       expect(res.body.data.accessToken).toEqual(expect.any(String));
-      expect(extractRefreshCookieHeader(res)).toEqual(expect.any(String));
+      expect(res.body.data.refreshToken).toEqual(expect.any(String));
+      expect(res.headers['set-cookie']).toBeUndefined(); // no cookie mechanism — body only, matching bepay's convention
     });
 
     it('rejects a duplicate email with 409 EMAIL_ALREADY_EXISTS', async () => {
@@ -63,7 +57,7 @@ describe('Auth routes', () => {
   });
 
   describe('POST /api/v1/auth/login', () => {
-    it('logs in with correct credentials', async () => {
+    it('logs in with correct credentials and returns both tokens in the body', async () => {
       const { app } = buildTestApp();
       await request(app).post('/api/v1/auth/register').send(validRegisterPayload());
 
@@ -73,6 +67,7 @@ describe('Auth routes', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.data.accessToken).toEqual(expect.any(String));
+      expect(res.body.data.refreshToken).toEqual(expect.any(String));
     });
 
     it('rejects a wrong password and an unknown email with the same generic message (no user enumeration)', async () => {
@@ -115,42 +110,49 @@ describe('Auth routes', () => {
     it('rotates the refresh token and issues a new access token', async () => {
       const { app } = buildTestApp();
       const registerRes = await request(app).post('/api/v1/auth/register').send(validRegisterPayload());
-      const cookie1 = extractRefreshCookieHeader(registerRes);
+      const token1 = registerRes.body.data.refreshToken;
 
-      const first = await request(app).post('/api/v1/auth/refresh').set('Cookie', cookie1);
+      const first = await request(app).post('/api/v1/auth/refresh').send({ refreshToken: token1 });
       expect(first.status).toBe(200);
       expect(first.body.data.accessToken).toEqual(expect.any(String));
 
-      const cookie2 = extractRefreshCookieHeader(first);
-      expect(cookie2).not.toBe(cookie1);
+      const token2 = first.body.data.refreshToken;
+      expect(token2).not.toBe(token1);
 
-      const second = await request(app).post('/api/v1/auth/refresh').set('Cookie', cookie2);
+      const second = await request(app).post('/api/v1/auth/refresh').send({ refreshToken: token2 });
       expect(second.status).toBe(200);
     });
 
     it('detects reuse of an already-rotated refresh token and revokes the whole session family', async () => {
       const { app } = buildTestApp();
       const registerRes = await request(app).post('/api/v1/auth/register').send(validRegisterPayload());
-      const originalCookie = extractRefreshCookieHeader(registerRes);
+      const originalToken = registerRes.body.data.refreshToken;
 
-      const firstRefresh = await request(app).post('/api/v1/auth/refresh').set('Cookie', originalCookie);
+      const firstRefresh = await request(app).post('/api/v1/auth/refresh').send({ refreshToken: originalToken });
       expect(firstRefresh.status).toBe(200);
-      const rotatedCookie = extractRefreshCookieHeader(firstRefresh);
+      const rotatedToken = firstRefresh.body.data.refreshToken;
 
-      // Replay the ORIGINAL (now-rotated-away) refresh cookie.
-      const replay = await request(app).post('/api/v1/auth/refresh').set('Cookie', originalCookie);
+      // Replay the ORIGINAL (now-rotated-away) refresh token.
+      const replay = await request(app).post('/api/v1/auth/refresh').send({ refreshToken: originalToken });
       expect(replay.status).toBe(401);
       expect(replay.body.error.code).toBe('INVALID_REFRESH_TOKEN');
 
       // The whole family is burned — even the token from the legitimate first
       // refresh must no longer work.
-      const afterReuse = await request(app).post('/api/v1/auth/refresh').set('Cookie', rotatedCookie);
+      const afterReuse = await request(app).post('/api/v1/auth/refresh').send({ refreshToken: rotatedToken });
       expect(afterReuse.status).toBe(401);
     });
 
-    it('rejects a refresh call with no cookie at all', async () => {
+    it('rejects a refresh call with no refreshToken field at all (400, not 401 — this is a missing-input error)', async () => {
       const { app } = buildTestApp();
-      const res = await request(app).post('/api/v1/auth/refresh');
+      const res = await request(app).post('/api/v1/auth/refresh').send({});
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('rejects an unknown/garbage refresh token with 401', async () => {
+      const { app } = buildTestApp();
+      const res = await request(app).post('/api/v1/auth/refresh').send({ refreshToken: 'not-a-real-token' });
       expect(res.status).toBe(401);
       expect(res.body.error.code).toBe('INVALID_REFRESH_TOKEN');
     });
@@ -160,18 +162,18 @@ describe('Auth routes', () => {
     it('revokes the refresh token so it can no longer be used', async () => {
       const { app } = buildTestApp();
       const registerRes = await request(app).post('/api/v1/auth/register').send(validRegisterPayload());
-      const cookie = extractRefreshCookieHeader(registerRes);
+      const token = registerRes.body.data.refreshToken;
 
-      const logoutRes = await request(app).post('/api/v1/auth/logout').set('Cookie', cookie);
+      const logoutRes = await request(app).post('/api/v1/auth/logout').send({ refreshToken: token });
       expect(logoutRes.status).toBe(200);
 
-      const afterLogout = await request(app).post('/api/v1/auth/refresh').set('Cookie', cookie);
+      const afterLogout = await request(app).post('/api/v1/auth/refresh').send({ refreshToken: token });
       expect(afterLogout.status).toBe(401);
     });
 
-    it('is idempotent when called with no session', async () => {
+    it('is idempotent when called with no token at all', async () => {
       const { app } = buildTestApp();
-      const res = await request(app).post('/api/v1/auth/logout');
+      const res = await request(app).post('/api/v1/auth/logout').send({});
       expect(res.status).toBe(200);
     });
   });
@@ -181,14 +183,14 @@ describe('Auth routes', () => {
       return { verify: jest.fn().mockResolvedValue(profile) };
     }
 
-    it('creates a new account for a first-time Google sign-in', async () => {
+    it('creates a new account for a first-time Google sign-in and echoes back tokens + googleId', async () => {
       const { app } = buildTestApp({
         googleVerifier: fakeVerifier({
           googleId: 'g-123',
           email: 'newgoogle@example.com',
           emailVerified: true,
           name: 'Grace Hopper',
-          avatarUrl: 'https://example.com/pic.png',
+          profilePhotoUrl: 'https://example.com/pic.png',
         }),
       });
 
@@ -197,6 +199,9 @@ describe('Auth routes', () => {
       expect(res.status).toBe(200);
       expect(res.body.data.user.email).toBe('newgoogle@example.com');
       expect(res.body.data.user.authProvider).toBe('google');
+      expect(res.body.data.user.googleId).toBe('g-123');
+      expect(res.body.data.accessToken).toEqual(expect.any(String));
+      expect(res.body.data.refreshToken).toEqual(expect.any(String));
     });
 
     it('logs an existing Google user back in on a second sign-in (idempotent, not a duplicate account)', async () => {
@@ -205,7 +210,7 @@ describe('Auth routes', () => {
         email: 'repeat@example.com',
         emailVerified: true,
         name: 'Repeat User',
-        avatarUrl: '',
+        profilePhotoUrl: '',
       });
       const { app } = buildTestApp({ googleVerifier: verifier });
 
@@ -213,6 +218,7 @@ describe('Auth routes', () => {
       const second = await request(app).post('/api/v1/auth/google').send({ idToken: 'fake-token' });
 
       expect(first.body.data.user.id).toBe(second.body.data.user.id);
+      expect(second.body.data.user.googleId).toBe('g-456');
     });
 
     it('refuses to silently link a Google sign-in to an existing local account with the same email (would let whoever registered first keep access)', async () => {
@@ -222,7 +228,7 @@ describe('Auth routes', () => {
           email: 'ada@example.com',
           emailVerified: true,
           name: 'Ada Lovelace',
-          avatarUrl: '',
+          profilePhotoUrl: '',
         }),
       });
 
@@ -240,7 +246,7 @@ describe('Auth routes', () => {
           email: 'unverified@example.com',
           emailVerified: false,
           name: 'Unverified',
-          avatarUrl: '',
+          profilePhotoUrl: '',
         }),
       });
 

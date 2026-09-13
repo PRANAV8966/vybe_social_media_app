@@ -1,4 +1,5 @@
 const userResponse = require('../dto/responses/user.response');
+const { InvalidProfilePhotoError } = require('../errors/user.errors');
 
 class UserController {
   constructor(userService) {
@@ -8,6 +9,7 @@ class UserController {
     this.updateMe = this.updateMe.bind(this);
     this.getByUsername = this.getByUsername.bind(this);
     this.search = this.search.bind(this);
+    this.uploadProfilePhoto = this.uploadProfilePhoto.bind(this);
   }
 
   async getMe(req, res) {
@@ -23,6 +25,14 @@ class UserController {
   async getByUsername(req, res) {
     const { user, stats } = await this.userService.getPublicProfile(req.params.username);
     res.status(200).json(userResponse.success(userResponse.toProfileDTO(user, stats)));
+  }
+
+  async uploadProfilePhoto(req, res) {
+    if (!req.file) {
+      throw new InvalidProfilePhotoError('No photo file was provided');
+    }
+    const { user, stats } = await this.userService.updateProfilePhoto(req.user.id, req.file);
+    res.status(200).json(userResponse.success(userResponse.toMeDTO(user, stats), 'Profile photo updated'));
   }
 
   async search(req, res) {

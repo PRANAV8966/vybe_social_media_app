@@ -6,11 +6,10 @@ const logger = pino({
   redact: {
     paths: [
       'req.headers.authorization',
-      'req.headers.cookie',
       'req.body.password',
       'req.body.newPassword',
       'req.body.idToken',
-      'res.headers["set-cookie"]',
+      'req.body.refreshToken',
     ],
     censor: '[REDACTED]',
   },

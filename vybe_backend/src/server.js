@@ -1,6 +1,7 @@
 const env = require('./config/env');
 const logger = require('./config/logger');
 const { connectDB, disconnectDB } = require('./config/db');
+const { checkS3Access } = require('./config/s3');
 const Container = require('./container/Container');
 const { createApp } = require('./app');
 
@@ -9,7 +10,10 @@ const { registerAuthModule } = require('./modules/auth/auth.module');
 const { registerPostsModule } = require('./modules/posts/post.module');
 
 async function start() {
-  await connectDB();
+  // Independent startup checks — MongoDB connectivity is required (fails
+  // fast, see assertReplicaSet), S3 connectivity is advisory-only (see
+  // checkS3Access) — nothing about the other depends on either's result.
+  await Promise.all([connectDB(), checkS3Access()]);
 
   const container = new Container();
   // Registration order is independent of resolution order — every module's

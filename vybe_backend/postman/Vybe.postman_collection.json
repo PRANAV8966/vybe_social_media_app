@@ -1,0 +1,678 @@
+{
+  "info": {
+    "_postman_id": "b3f1a2c4-7d5e-4a9b-8c1d-2e3f4a5b6c7d",
+    "name": "Vybe Backend API",
+    "description": "Phase 1 + 2 API for the Vybe social app backend: auth (local + Google), user profiles (incl. profile photo upload), and posts (incl. image/video media upload).\n\n**Before you start**\n- Run the server locally (`npm run dev` inside `vybe_backend/`) against a MongoDB **replica set** — the app fails fast at boot otherwise (transactions require it).\n- All variables (`base_url`, `access_token`, `userId`, etc.) are defined as **collection variables** with working defaults, so this collection runs correctly with NO environment selected at all — open the collection, check the \"Variables\" tab if you want to see/edit them directly. Selecting the \"Vybe Backend - Local\" environment is optional, only useful if you want a separate override (e.g. pointing `base_url` at staging) — when it IS selected, every script writes to both the environment and the collection variables together, so nothing gets shadowed or goes stale either way.\n- `S3_BUCKET`/`AWS_REGION` must point at a real bucket your server's AWS credentials can write to for the media-upload requests (Upload Profile Photo, Create Post with Media, Edit Post - Replace Media) to succeed — everything else works without S3 at all.\n- Auth endpoints are rate-limited (`AUTH_RATE_LIMIT_MAX` per `AUTH_RATE_LIMIT_WINDOW_MS`, default 10 requests / 15 min); upload endpoints have their own, separate, tighter limit (`UPLOAD_RATE_LIMIT_MAX`, default 30 / 15 min) — spamming either will eventually 429.\n- Both `accessToken` and `refreshToken` are returned directly in the JSON response body (matching bepay's convention) — there is NO cookie involved anywhere in this API. The `refresh_token` variable is set automatically by Register/Login/Google Sign-In/Refresh's test scripts; Refresh and Logout send it back as `{ refreshToken }` in their own request bodies.\n- Every response uses one consistent envelope: `{ success, data | error: { code, message, details }, timestamp }`.\n- A collection-level pre-request script checks `base_url` before every send and throws a clear error if it's somehow still unresolved, instead of a confusing DNS/404 failure.\n\n**Folders**\n1. Auth — register/login/Google/refresh/logout\n2. Users — profile read/update/search/profile-photo upload\n3. Posts — create/edit/delete/read (text-only and with image/video media), with cursor pagination\n4. Scenarios — demonstrates the backend's distinguishing behaviors: idempotent post creation, the ownership guard returning 404 (not 403) for another user's post, and private-account post gating.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{access_token}}", "type": "string" }]
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:4000/api/v1", "type": "string" },
+    { "key": "name", "value": "", "type": "string" },
+    { "key": "username", "value": "", "type": "string" },
+    { "key": "email", "value": "", "type": "string" },
+    { "key": "password", "value": "", "type": "string" },
+    { "key": "userId", "value": "", "type": "string" },
+    { "key": "access_token", "value": "", "type": "string" },
+    { "key": "refresh_token", "value": "", "type": "string" },
+    { "key": "secondary_name", "value": "", "type": "string" },
+    { "key": "secondary_username", "value": "", "type": "string" },
+    { "key": "secondary_email", "value": "", "type": "string" },
+    { "key": "secondary_password", "value": "", "type": "string" },
+    { "key": "secondary_userId", "value": "", "type": "string" },
+    { "key": "secondary_access_token", "value": "", "type": "string" },
+    { "key": "postId", "value": "", "type": "string" },
+    { "key": "idempotency_key", "value": "", "type": "string" },
+    { "key": "media_request_id", "value": "", "type": "string" },
+    { "key": "google_id_token", "value": "", "type": "string" }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// base_url has a working default as a COLLECTION variable, so it resolves even with no",
+          "// environment selected. This just fails loudly with a clear message if that's somehow",
+          "// not the case, instead of a confusing DNS-lookup or 404 failure on the actual request.",
+          "const baseUrl = pm.variables.get('base_url');",
+          "if (!baseUrl || baseUrl.indexOf('{{') !== -1) {",
+          "  throw new Error(",
+          "    'base_url did not resolve. Open this collection > Variables tab and confirm base_url is set ' +",
+          "    '(default: http://localhost:4000/api/v1), or select the \"Vybe Backend - Local\" environment ' +",
+          "    'from the dropdown in the top-right corner.'",
+          "  );",
+          "}"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.test('Response time is reasonable', function () {",
+          "  pm.expect(pm.response.responseTime).to.be.below(3000);",
+          "});",
+          "pm.test('Content-Type is JSON', function () {",
+          "  pm.response.to.have.header('Content-Type');",
+          "  pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
+          "});"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function setVar(key, value) {",
+                  "  pm.collectionVariables.set(key, value);",
+                  "  try { pm.environment.set(key, value); } catch (e) { /* no environment selected */ }",
+                  "}",
+                  "const unique = Date.now();",
+                  "setVar('name', 'Ada Lovelace');",
+                  "setVar('username', 'ada_' + unique);",
+                  "setVar('email', 'ada_' + unique + '@example.com');",
+                  "setVar('password', 'Str0ng!Passw0rd123');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function setVar(key, value) {",
+                  "  pm.collectionVariables.set(key, value);",
+                  "  try { pm.environment.set(key, value); } catch (e) { /* no environment selected */ }",
+                  "}",
+                  "pm.test('Status code is 201', function () { pm.response.to.have.status(201); });",
+                  "const json = pm.response.json();",
+                  "pm.test('Returns access + refresh tokens and never a passwordHash', function () {",
+                  "  pm.expect(json.data.accessToken).to.be.a('string');",
+                  "  pm.expect(json.data.refreshToken).to.be.a('string');",
+                  "  pm.expect(json.data.user.passwordHash).to.be.undefined;",
+                  "});",
+                  "if (json.success) {",
+                  "  setVar('access_token', json.data.accessToken);",
+                  "  setVar('refresh_token', json.data.refreshToken);",
+                  "  setVar('userId', json.data.user.id);",
+                  "  setVar('username', json.data.user.username);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{name}}\",\n  \"username\": \"{{username}}\",\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\",\n  \"country\": \"US\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{base_url}}/auth/register",
+            "description": "Creates a local account (argon2id password hash). `email`, `username`, and `googleId` each have a DB-level unique index — a duplicate returns `409 EMAIL_ALREADY_EXISTS` or `409 USERNAME_ALREADY_EXISTS`, translated from the raw Mongo duplicate-key error. `country` is optional, ISO 3166-1 alpha-2. The pre-request script mints a fresh unique username/email every send so this can be re-run without manual edits.\n\nBoth `accessToken` and `refreshToken` come back directly in the response body (no cookie) — the test script captures both into variables (collection scope always, environment too if one's selected). Also issues a UserStats(0,0,0) doc in the same transaction as the User doc."
+          },
+          "response": []
+        },
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function setVar(key, value) {",
+                  "  pm.collectionVariables.set(key, value);",
+                  "  try { pm.environment.set(key, value); } catch (e) { /* no environment selected */ }",
+                  "}",
+                  "pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "if (json.success) {",
+                  "  setVar('access_token', json.data.accessToken);",
+                  "  setVar('refresh_token', json.data.refreshToken);",
+                  "  setVar('userId', json.data.user.id);",
+                  "  setVar('username', json.data.user.username);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{base_url}}/auth/login",
+            "description": "Reuses the {{email}}/{{password}} set by Register's pre-request script. A wrong password and an unknown email both return the SAME `401 INVALID_CREDENTIALS` message (no user-enumeration signal). After `LOGIN_MAX_FAILED_ATTEMPTS` (default 5) consecutive failures the account locks for `LOGIN_LOCK_DURATION_MS` (default 15 min), returning `423 ACCOUNT_LOCKED` — a lock that has already expired grants a fresh attempt budget rather than instantly re-locking."
+          },
+          "response": []
+        },
+        {
+          "name": "Google Sign-In",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function setVar(key, value) {",
+                  "  pm.collectionVariables.set(key, value);",
+                  "  try { pm.environment.set(key, value); } catch (e) { /* no environment selected */ }",
+                  "}",
+                  "const json = pm.response.json();",
+                  "if (json.success) {",
+                  "  setVar('access_token', json.data.accessToken);",
+                  "  setVar('refresh_token', json.data.refreshToken);",
+                  "  setVar('userId', json.data.user.id);",
+                  "  setVar('username', json.data.user.username);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idToken\": \"{{google_id_token}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{base_url}}/auth/google",
+            "description": "Postman can't mint a real Google ID token — obtain one from your frontend's Google Sign-In flow (or Google's OAuth Playground against your own `GOOGLE_CLIENT_ID`) and paste it into the `google_id_token` variable before running this.\n\nServer-side behavior worth knowing:\n- Verifies the token's signature/issuer/audience/expiry via `google-auth-library`, and additionally requires `email_verified === true` (`401 GOOGLE_AUTH_FAILED` otherwise).\n- If an existing local account already uses that email, this is REJECTED with `401 GOOGLE_AUTH_FAILED` rather than silently linked — auto-linking-by-email was identified as an account-takeover vector during review (an attacker could pre-register the victim's email locally) and deliberately removed. Log in with the local password instead.\n- A brand-new Google user gets an auto-generated, collision-retried username derived from their display name.\n- The response `user` object includes `googleId` (the provider's `sub` claim) whenever the account is Google-linked — omitted entirely for local-only accounts, matching bepay's `GlobalUserDTO` convention of only including provider ids when they actually exist."
+          },
+          "response": []
+        },
+        {
+          "name": "Refresh Access Token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function setVar(key, value) {",
+                  "  pm.collectionVariables.set(key, value);",
+                  "  try { pm.environment.set(key, value); } catch (e) { /* no environment selected */ }",
+                  "}",
+                  "pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "if (json.success) {",
+                  "  setVar('access_token', json.data.accessToken);",
+                  "  setVar('refresh_token', json.data.refreshToken);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refresh_token}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{base_url}}/auth/refresh",
+            "description": "Sends back whatever `refresh_token` was captured by the last Register/Login/Google Sign-In/Refresh call. Rotates it (the old one is marked revoked server-side) and returns a fresh `accessToken` + a NEW `refreshToken` — the test script overwrites `refresh_token` with the new value, so re-running this request keeps working.\n\nReplaying an already-rotated (or expired, or unknown) refresh token is treated as possible theft: the server revokes EVERY active refresh token for that user, forcing a full re-login on all devices, and returns `401 INVALID_REFRESH_TOKEN`. Omitting `refreshToken` entirely returns `400 VALIDATION_ERROR` instead (a missing-input error, distinct from an invalid one)."
+          },
+          "response": []
+        },
+        {
+          "name": "Logout",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function setVar(key, value) {",
+                  "  pm.collectionVariables.set(key, value);",
+                  "  try { pm.environment.set(key, value); } catch (e) { /* no environment selected */ }",
+                  "}",
+                  "pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+                  "setVar('access_token', '');",
+                  "setVar('refresh_token', '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refresh_token}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{base_url}}/auth/logout",
+            "description": "Revokes the given refresh token. Idempotent — `refreshToken` is optional here (unlike Refresh, where it's required): calling this with an empty body still returns 200, a deliberate no-op rather than an error."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Users",
+      "item": [
+        {
+          "name": "Get My Profile",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/users/me",
+            "description": "Returns the caller's profile merged with their UserStats doc (followersCount/followingCount/postsCount), fetched in parallel via Promise.all — UserStats is a separate collection precisely so these counters don't live on (and contend with writes to) the User document itself. Requires `Authorization: Bearer {{access_token}}`."
+          },
+          "response": []
+        },
+        {
+          "name": "Update My Profile",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bio\": \"Mathematician & programmer\",\n  \"country\": \"GB\",\n  \"isPrivate\": false\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{base_url}}/users/me",
+            "description": "Only `name`, `bio`, `country`, `isPrivate` are ever writable here — email/username changes are intentionally not supported by this endpoint (any other field sent is silently ignored, not an error). `profilePhotoUrl` is NOT settable here either — see \"Upload Profile Photo\" below; it's upload-only (no arbitrary client-supplied URL), closing off what would otherwise be an unvalidated external-URL input. Setting `isPrivate: true` immediately gates post visibility for everyone except you (see the Scenarios folder)."
+          },
+          "response": []
+        },
+        {
+          "name": "Upload Profile Photo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "pm.test('Returns a profile-photos/ S3 key', function () {",
+                  "  pm.expect(json.data.profilePhotoUrl).to.include('profile-photos/');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [{ "key": "photo", "type": "file", "src": null, "description": "Required. PNG, JPEG, or WebP only." }]
+            },
+            "url": "{{base_url}}/users/me/profile-photo",
+            "description": "Select a PNG/JPEG/WebP file for the `photo` field before sending (required — omitting it returns `400 INVALID_PROFILE_PHOTO`).\n\nServer-side behavior worth knowing:\n- The file's actual bytes are verified against real PNG/JPEG/WebP magic-byte signatures — a renamed/mislabeled file (e.g. a `.txt` saved as `photo.png`) is rejected regardless of its extension or declared Content-Type (`400 INVALID_PROFILE_PHOTO`).\n- Size is capped at `IMAGE_MAX_BYTES` (default 8 MB) — over that, `400 PROFILE_PHOTO_TOO_LARGE`.\n- Upload ordering is deliberately sequential for safety: the NEW photo is uploaded and confirmed first, then `User.profilePhotoUrl` is updated (the only safe commit point), and only THEN is the OLD photo deleted from S3 (best-effort — a delete failure is logged, never fails the request). This ordering means a failed upload can never leave your profile pointing at a photo that doesn't exist, and a failed DB write never destroys a photo that was still your current one.\n- This endpoint (along with post media uploads) has its own tighter rate limit (`UPLOAD_RATE_LIMIT_MAX`, default 30 / 15 min), separate from the general API limit, since a buffered upload holds its full file size in server memory for the request's duration."
+          },
+          "response": []
+        },
+        {
+          "name": "Search Users",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/users/search?q={{username}}&limit=20",
+            "description": "Matches by username PREFIX (anchored regex — can use the unique username index) OR by a case-insensitive substring of `name`. Cursor-paginated: pass the last page's `nextCursor` as `cursor` for the next page. `q` is required, 1-50 chars."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Public Profile by Username",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/users/{{username}}",
+            "description": "Public profile fields only (no email). Returns `404 USER_NOT_FOUND` for an unknown or deactivated (`isActive: false`) username."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Posts",
+      "item": [
+        {
+          "name": "Create Post",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 201 (new post)', function () { pm.response.to.have.status(201); });",
+                  "const json = pm.response.json();",
+                  "if (json.success) { pm.collectionVariables.set('postId', json.data.id); try { pm.environment.set('postId', json.data.id); } catch (e) { /* no environment selected */ } }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Hello from Postman!\",\n  \"clientRequestId\": \"{{$guid}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{base_url}}/posts",
+            "description": "This is the text-only path — plain JSON still works (multer simply no-ops when Content-Type isn't multipart, leaving express.json()'s parsed body untouched). `text` is required (1-500 chars). `clientRequestId` is an OPTIONAL client-generated idempotency key ({{$guid}} regenerates a fresh one on every send here) — a compound UNIQUE PARTIAL index on `(author, clientRequestId)` (only applied to documents where the field exists, so posts that omit it never collide) means retrying the exact same `clientRequestId` returns the ORIGINAL post with `200 OK` instead of creating a duplicate with `201 Created`. See \"Replay Create Post\" in Scenarios for a live demo. Also atomically increments the author's `UserStats.postsCount` inside the same transaction as the insert.\n\nTo attach an image or video, use \"Create Post with Media\" below instead — there's no `imageUrl` (or any other) field for supplying a pre-hosted URL; media only ever gets onto a post via upload."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Post with Media",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const guid = pm.variables.replaceIn('{{$guid}}');",
+                  "pm.collectionVariables.set('media_request_id', guid);",
+                  "try { pm.environment.set('media_request_id', guid); } catch (e) { /* no environment selected */ }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 201 (first send) or 200 (replay)', function () { pm.expect([200, 201]).to.include(pm.response.code); });",
+                  "const json = pm.response.json();",
+                  "pm.test('mediaType is image or video, mediaUrl is set', function () {",
+                  "  pm.expect(['image', 'video']).to.include(json.data.mediaType);",
+                  "  pm.expect(json.data.mediaUrl).to.be.a('string');",
+                  "});",
+                  "if (json.success) { pm.collectionVariables.set('postId', json.data.id); try { pm.environment.set('postId', json.data.id); } catch (e) { /* no environment selected */ } }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "text", "value": "Look at this!", "type": "text" },
+                { "key": "clientRequestId", "value": "{{media_request_id}}", "type": "text" },
+                { "key": "media", "type": "file", "src": null, "description": "Optional. Image: png/jpg/webp. Video: mp4/webm/mov." }
+              ]
+            },
+            "url": "{{base_url}}/posts",
+            "description": "Same endpoint as \"Create Post\", but sent as `multipart/form-data` with a `media` file attached. Select an image OR a video for the `media` field before sending.\n\nServer-side behavior worth knowing:\n- The real `mediaType` is determined by sniffing the file's magic bytes (PNG/JPEG/WebP signatures, or an ISO-BMFF `ftyp` box / WebM EBML header for video) — never trusted from the file's extension or declared Content-Type.\n- Size limits differ by the DETECTED type: images capped at `IMAGE_MAX_BYTES` (default 8 MB), video at the higher `VIDEO_MAX_BYTES` (default 50 MB) — an oversized image is still rejected (`400 POST_MEDIA_TOO_LARGE`) even though it's well under the video ceiling multer enforces first.\n- The upload is sequenced BEFORE the post is created — a post is only ever created pointing at media that's already confirmed to exist in S3.\n- Because `clientRequestId` is set, the S3 object key itself is DETERMINISTIC (`posts/{authorId}/{clientRequestId}.{ext}`): resending this exact request (e.g. after a timeout) overwrites the same key and returns the original post (`200`, unchanged `mediaUrl`) instead of creating a duplicate post or an orphaned second upload — see \"2. Replay Create Post\" in Scenarios for the same idea without media."
+          },
+          "response": []
+        },
+        {
+          "name": "Edit Post",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"Updated: hello from Postman!\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{base_url}}/posts/{{postId}}",
+            "description": "Author-only. The repository query combines `_id`, `author`, and `isDeleted: false` into ONE atomic filter — there is no separate \"check ownership, then update\" step. If the post doesn't exist OR belongs to someone else, this returns `404 POST_NOT_FOUND` either way (deliberately ambiguous, not `403`).\n\n`text` alone is fine here (this request), but at least one of `text` or an attached `media` file is required — see \"Edit Post - Replace Media\" for attaching/replacing media, and note that sending neither returns `400 POST_VALIDATION_ERROR`."
+          },
+          "response": []
+        },
+        {
+          "name": "Edit Post - Replace Media",
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [{ "key": "media", "type": "file", "src": null, "description": "Optional together with text below, but at least one is required." }]
+            },
+            "url": "{{base_url}}/posts/{{postId}}",
+            "description": "Same ownership guard as \"Edit Post\" (404 for not-found-or-not-yours) — checked BEFORE any upload is attempted, so a stranger's request never wastes an S3 call. Select a new image or video for `media` and send.\n\nServer-side ordering: the new file is uploaded and confirmed first, then the post's `mediaUrl`/`mediaType` are updated (the safe commit point), and only THEN is the PREVIOUS media object deleted from S3 (best-effort, logged on failure, never blocks the response). Editing `text` only (no `media` field at all, as in the plain \"Edit Post\" request) leaves existing media completely untouched — nothing is re-uploaded or deleted."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Post",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{base_url}}/posts/{{postId}}",
+            "description": "Author-only, same combined-predicate guard as Edit. Soft-delete (`isDeleted: true`), not a hard delete — keeps referential integrity for likes/counters. Decrements `UserStats.postsCount` atomically in the same transaction."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Post by Id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/posts/id/{{postId}}",
+            "description": "Returns `404 POST_NOT_FOUND` if the post is soft-deleted, or if its author is private and you're not the owner (no Follow relationship exists yet in phase 1 — see Scenarios)."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Posts by Username (Paginated)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/posts/user/{{username}}?limit=20",
+            "description": "Cursor pagination on `_id` (reverse-chronological). Pass the previous page's `nextCursor` as `cursor` to continue. If the target account is private and you're not the owner, this returns `200 OK` with `{ isPrivate: true, isFollowing: false, posts: [] }` — a gated empty page, not an error — since \"this account is private\" is a normal UI state, not a failure."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Scenarios",
+      "description": "Small guided flows demonstrating the backend's distinguishing behaviors end to end. Run each request top to bottom.",
+      "item": [
+        {
+          "name": "1. Register Secondary User",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function setVar(key, value) {",
+                  "  pm.collectionVariables.set(key, value);",
+                  "  try { pm.environment.set(key, value); } catch (e) { /* no environment selected */ }",
+                  "}",
+                  "const unique = Date.now() + 1;",
+                  "setVar('secondary_name', 'Grace Hopper');",
+                  "setVar('secondary_username', 'grace_' + unique);",
+                  "setVar('secondary_email', 'grace_' + unique + '@example.com');",
+                  "setVar('secondary_password', 'An0ther!Str0ngPass456');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function setVar(key, value) {",
+                  "  pm.collectionVariables.set(key, value);",
+                  "  try { pm.environment.set(key, value); } catch (e) { /* no environment selected */ }",
+                  "}",
+                  "pm.test('Status code is 201', function () { pm.response.to.have.status(201); });",
+                  "const json = pm.response.json();",
+                  "if (json.success) {",
+                  "  setVar('secondary_access_token', json.data.accessToken);",
+                  "  setVar('secondary_userId', json.data.user.id);",
+                  "  setVar('secondary_username', json.data.user.username);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": { "type": "noauth" },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{secondary_name}}\",\n  \"username\": \"{{secondary_username}}\",\n  \"email\": \"{{secondary_email}}\",\n  \"password\": \"{{secondary_password}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{base_url}}/auth/register",
+            "description": "A second, independent account used below to prove the ownership guard and private-account gating against the PRIMARY user's post/profile (run Auth > Register first so {{postId}} etc. belong to a different user than this one)."
+          },
+          "response": []
+        },
+        {
+          "name": "2. Replay Create Post (Idempotency Demo)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.variables.get('idempotency_key')) {",
+                  "  const key = 'demo-key-' + Date.now();",
+                  "  pm.collectionVariables.set('idempotency_key', key);",
+                  "  try { pm.environment.set('idempotency_key', key); } catch (e) { /* no environment selected */ }",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "pm.test('Status is 201 (first send) or 200 (replay)', function () {",
+                  "  pm.expect([200, 201]).to.include(pm.response.code);",
+                  "});",
+                  "console.log(pm.response.code === 201 ? 'Created a new post' : 'Replay detected — returned the SAME existing post, no duplicate created');",
+                  "if (json.success) { pm.collectionVariables.set('postId', json.data.id); try { pm.environment.set('postId', json.data.id); } catch (e) { /* no environment selected */ } }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"This post should never be duplicated\",\n  \"clientRequestId\": \"{{idempotency_key}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{base_url}}/posts",
+            "description": "Run this request TWICE in a row. First send: `201 Created`, a new post. Second send (same fixed `idempotency_key`, unlike the plain Create Post request which regenerates a fresh `{{$guid}}` every time): `200 OK` with the IDENTICAL post id, and `UserStats.postsCount` is not double-incremented. This is the `(author, clientRequestId)` partial unique index + catch-and-refetch pattern in action."
+          },
+          "response": []
+        },
+        {
+          "name": "3. Attempt to Edit Another User's Post (expect 404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 404, not 403', function () { pm.response.to.have.status(404); });",
+                  "pm.test('Error code is POST_NOT_FOUND', function () {",
+                  "  pm.expect(pm.response.json().error.code).to.eql('POST_NOT_FOUND');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{secondary_access_token}}", "type": "string" }]
+            },
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"hijacked!\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{base_url}}/posts/{{postId}}",
+            "description": "Uses {{secondary_access_token}} to try editing a post owned by the PRIMARY user ({{postId}}). Returns 404, identical to what you'd get for a post that doesn't exist at all — the repository never distinguishes \"not found\" from \"not yours\" for mutations, by design."
+          },
+          "response": []
+        },
+        {
+          "name": "4. Set My Profile to Private",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"isPrivate\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": "{{base_url}}/users/me",
+            "description": "Run this as the PRIMARY user (default {{access_token}}). Flips {{username}}'s account to private."
+          },
+          "response": []
+        },
+        {
+          "name": "5. View Private Profile's Posts as Non-Follower (expect gated)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200 (gated, not an error)', function () { pm.response.to.have.status(200); });",
+                  "const json = pm.response.json();",
+                  "pm.test('isPrivate is true and posts array is empty', function () {",
+                  "  pm.expect(json.data.isPrivate).to.eql(true);",
+                  "  pm.expect(json.data.posts).to.have.lengthOf(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{secondary_access_token}}", "type": "string" }]
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/posts/user/{{username}}",
+            "description": "The secondary user requests the (now-private) primary user's posts. No Follow relationship exists between them (Follow ships in phase 2), so this is fail-closed: `200 OK` with `isPrivate: true, isFollowing: false, posts: []` — a normal UI state, not a `403`."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

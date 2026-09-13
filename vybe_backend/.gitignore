@@ -2,4 +2,6 @@ node_modules/
 .env
 coverage/
 *.log
+logs/*
+!logs/.gitkeep
 .DS_Store

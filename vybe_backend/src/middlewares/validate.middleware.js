@@ -26,7 +26,15 @@ class RequestValidationError extends Error {
  */
 function validate(schema, property = 'body') {
   return function validateMiddleware(req, res, next) {
-    const { error, value } = schema.validate(req[property], {
+    // No body parser touches req.body/req[property] for a request with no
+    // matching Content-Type (e.g. no body at all) — it stays `undefined`
+    // rather than `{}`. An outer Joi object schema that isn't itself
+    // `.required()` treats `undefined` as "absent, therefore valid" and
+    // skips checking nested `.required()` fields entirely, which would let
+    // a truly empty request slip through. Defaulting to `{}` first closes
+    // that gap uniformly for every route using this middleware.
+    const target = req[property] === undefined ? {} : req[property];
+    const { error, value } = schema.validate(target, {
       abortEarly: false,
       stripUnknown: true,
       convert: true,

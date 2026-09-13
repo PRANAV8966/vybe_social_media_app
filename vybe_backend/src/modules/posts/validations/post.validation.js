@@ -4,16 +4,19 @@ const OBJECT_ID_PATTERN = /^[a-f0-9]{24}$/i;
 
 const objectIdParam = Joi.string().pattern(OBJECT_ID_PATTERN).required();
 
+const clientRequestIdSchema = Joi.string().trim().pattern(/^[a-zA-Z0-9_-]{1,100}$/);
+
 const createPostSchema = Joi.object({
   text: Joi.string().trim().min(1).max(500).required(),
-  imageUrl: Joi.string().uri({ scheme: ['http', 'https'] }).allow(''),
-  clientRequestId: Joi.string().trim().max(100),
+  clientRequestId: clientRequestIdSchema,
 });
 
+// No `.min(1)` here deliberately: media arrives as `req.file`, invisible to
+// this schema, so "text and/or media" is enforced in PostService instead —
+// an edit that only replaces media (no text field at all) must still pass.
 const editPostSchema = Joi.object({
   text: Joi.string().trim().min(1).max(500),
-  imageUrl: Joi.string().uri({ scheme: ['http', 'https'] }).allow(''),
-}).min(1);
+});
 
 const postIdParamSchema = Joi.object({
   postId: objectIdParam,

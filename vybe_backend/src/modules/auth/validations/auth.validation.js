@@ -24,4 +24,13 @@ const googleAuthSchema = Joi.object({
   idToken: Joi.string().required(),
 });
 
-module.exports = { registerSchema, loginSchema, googleAuthSchema };
+const refreshTokenSchema = Joi.object({
+  refreshToken: Joi.string().required(),
+});
+
+// Not required — logout with no token at all stays a valid no-op (idempotent logout).
+const logoutSchema = Joi.object({
+  refreshToken: Joi.string(),
+});
+
+module.exports = { registerSchema, loginSchema, googleAuthSchema, refreshTokenSchema, logoutSchema };

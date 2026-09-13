@@ -23,4 +23,22 @@ class PostNotFoundError extends PostError {
   }
 }
 
-module.exports = { PostError, PostNotFoundError };
+class PostValidationError extends PostError {
+  constructor(message, details = null) {
+    super('POST_VALIDATION_ERROR', 400, message, details);
+  }
+}
+
+class UnsupportedPostMediaError extends PostError {
+  constructor() {
+    super('UNSUPPORTED_POST_MEDIA', 400, 'Unsupported or unrecognized media format');
+  }
+}
+
+class PostMediaTooLargeError extends PostError {
+  constructor(mediaType, maxBytes) {
+    super('POST_MEDIA_TOO_LARGE', 400, `${mediaType === 'video' ? 'Video' : 'Image'} exceeds the ${maxBytes}-byte limit`);
+  }
+}
+
+module.exports = { PostError, PostNotFoundError, PostValidationError, UnsupportedPostMediaError, PostMediaTooLargeError };

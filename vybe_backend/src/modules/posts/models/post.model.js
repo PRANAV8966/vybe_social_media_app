@@ -13,9 +13,14 @@ const postSchema = new Schema(
       trim: true,
       maxlength: 500,
     },
-    imageUrl: {
+    mediaUrl: {
       type: String,
-      default: '',
+      default: null,
+    },
+    mediaType: {
+      type: String,
+      enum: ['image', 'video', null],
+      default: null,
     },
     likesCount: {
       type: Number,

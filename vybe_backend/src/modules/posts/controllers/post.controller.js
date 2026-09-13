@@ -12,12 +12,12 @@ class PostController {
   }
 
   async create(req, res) {
-    const { text, imageUrl, clientRequestId } = req.body;
+    const { text, clientRequestId } = req.body;
     const { post, created } = await this.postService.createPost({
       authorId: req.user.id,
       text,
-      imageUrl,
       clientRequestId,
+      file: req.file,
     });
     res.status(created ? 201 : 200).json(postResponse.success(postResponse.toPostDTO(post), created ? 'Post created' : 'Post already created'));
   }
@@ -27,7 +27,7 @@ class PostController {
       postId: req.params.postId,
       authorId: req.user.id,
       text: req.body.text,
-      imageUrl: req.body.imageUrl,
+      file: req.file,
     });
     res.status(200).json(postResponse.success(postResponse.toPostDTO(post), 'Post updated'));
   }

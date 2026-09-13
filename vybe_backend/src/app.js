@@ -1,7 +1,6 @@
 const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
-const cookieParser = require('cookie-parser');
 const compression = require('compression');
 const pinoHttp = require('pino-http');
 
@@ -27,14 +26,11 @@ function createApp(container) {
   }
 
   app.use(helmet());
-  app.use(
-    cors({
-      origin: env.clientOrigins,
-      credentials: true,
-    }),
-  );
+  // No `credentials: true` — auth tokens travel in the request/response body
+  // (Authorization header + JSON), not cookies, so there's nothing that
+  // needs cross-origin credentialed requests.
+  app.use(cors({ origin: env.clientOrigins }));
   app.use(express.json({ limit: '1mb' }));
-  app.use(cookieParser(env.cookieSecret));
   app.use(compression());
   app.use(pinoHttp({ logger, autoLogging: !env.isTest }));
   app.use(generalLimiter);

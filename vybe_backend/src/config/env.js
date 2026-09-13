@@ -1,3 +1,4 @@
+require('dotenv').config();
 const Joi = require('joi');
 
 const schema = Joi.object({
@@ -17,15 +18,21 @@ const schema = Joi.object({
 
   GOOGLE_CLIENT_ID: Joi.string().allow('').default(''),
 
-  COOKIE_SECRET: Joi.string().min(32).required(),
-
   AUTH_RATE_LIMIT_WINDOW_MS: Joi.number().integer().positive().default(900000),
   AUTH_RATE_LIMIT_MAX: Joi.number().integer().positive().default(10),
   GENERAL_RATE_LIMIT_WINDOW_MS: Joi.number().integer().positive().default(60000),
   GENERAL_RATE_LIMIT_MAX: Joi.number().integer().positive().default(120),
+  UPLOAD_RATE_LIMIT_WINDOW_MS: Joi.number().integer().positive().default(900000),
+  UPLOAD_RATE_LIMIT_MAX: Joi.number().integer().positive().default(30),
 
   LOGIN_MAX_FAILED_ATTEMPTS: Joi.number().integer().positive().default(5),
   LOGIN_LOCK_DURATION_MS: Joi.number().integer().positive().default(900000),
+
+  S3_BUCKET: Joi.string().required(),
+  AWS_REGION: Joi.string().required(),
+  S3_CDN_BASE_URL: Joi.string().uri().allow('').default(''),
+  IMAGE_MAX_BYTES: Joi.number().integer().positive().default(8 * 1024 * 1024),
+  VIDEO_MAX_BYTES: Joi.number().integer().positive().default(50 * 1024 * 1024),
 }).unknown(true);
 
 const { value: envVars, error } = schema.validate(process.env);
@@ -57,18 +64,29 @@ const env = {
 
   googleClientId: envVars.GOOGLE_CLIENT_ID,
 
-  cookieSecret: envVars.COOKIE_SECRET,
-
   rateLimit: {
     authWindowMs: envVars.AUTH_RATE_LIMIT_WINDOW_MS,
     authMax: envVars.AUTH_RATE_LIMIT_MAX,
     generalWindowMs: envVars.GENERAL_RATE_LIMIT_WINDOW_MS,
     generalMax: envVars.GENERAL_RATE_LIMIT_MAX,
+    uploadWindowMs: envVars.UPLOAD_RATE_LIMIT_WINDOW_MS,
+    uploadMax: envVars.UPLOAD_RATE_LIMIT_MAX,
   },
 
   login: {
     maxFailedAttempts: envVars.LOGIN_MAX_FAILED_ATTEMPTS,
     lockDurationMs: envVars.LOGIN_LOCK_DURATION_MS,
+  },
+
+  s3: {
+    bucket: envVars.S3_BUCKET,
+    region: envVars.AWS_REGION,
+    cdnBaseUrl: envVars.S3_CDN_BASE_URL || null,
+  },
+
+  uploads: {
+    imageMaxBytes: envVars.IMAGE_MAX_BYTES,
+    videoMaxBytes: envVars.VIDEO_MAX_BYTES,
   },
 };
 

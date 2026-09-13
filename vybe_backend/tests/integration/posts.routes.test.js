@@ -1,5 +1,6 @@
 const request = require('supertest');
 const { buildTestApp } = require('../helpers/buildTestApp');
+const { fakePngBuffer, fakeMp4Buffer, invalidMediaBuffer } = require('../helpers/mediaFixtures');
 
 async function registerUser(app, overrides = {}) {
   const payload = {
@@ -13,25 +14,38 @@ async function registerUser(app, overrides = {}) {
   return { accessToken: res.body.data.accessToken, user: res.body.data.user };
 }
 
+/** Post creation/edit is always multipart/form-data now (media arrives as req.file) — this builds that request. */
+function createPostRequest(app, token, { text, clientRequestId } = {}) {
+  const req = request(app).post('/api/v1/posts').set('Authorization', `Bearer ${token}`);
+  if (text !== undefined) req.field('text', text);
+  if (clientRequestId !== undefined) req.field('clientRequestId', clientRequestId);
+  return req;
+}
+
+function editPostRequest(app, token, postId, { text } = {}) {
+  const req = request(app).patch(`/api/v1/posts/${postId}`).set('Authorization', `Bearer ${token}`);
+  if (text !== undefined) req.field('text', text);
+  return req;
+}
+
 describe('Post routes', () => {
   it('rejects unauthenticated post creation', async () => {
     const { app } = buildTestApp();
-    const res = await request(app).post('/api/v1/posts').send({ text: 'hello' });
+    const res = await request(app).post('/api/v1/posts').field('text', 'hello');
     expect(res.status).toBe(401);
   });
 
-  it('creates a post and increments the author postsCount', async () => {
+  it('creates a text-only post and increments the author postsCount', async () => {
     const { app } = buildTestApp();
     const { accessToken } = await registerUser(app);
 
-    const createRes = await request(app)
-      .post('/api/v1/posts')
-      .set('Authorization', `Bearer ${accessToken}`)
-      .send({ text: 'hello world' });
+    const createRes = await createPostRequest(app, accessToken, { text: 'hello world' });
 
     expect(createRes.status).toBe(201);
     expect(createRes.body.data.text).toBe('hello world');
     expect(createRes.body.data.isEdited).toBe(false);
+    expect(createRes.body.data.mediaUrl).toBeNull();
+    expect(createRes.body.data.mediaType).toBeNull();
 
     const meRes = await request(app).get('/api/v1/users/me').set('Authorization', `Bearer ${accessToken}`);
     expect(meRes.body.data.postsCount).toBe(1);
@@ -41,14 +55,8 @@ describe('Post routes', () => {
     const { app } = buildTestApp();
     const { accessToken } = await registerUser(app);
 
-    const first = await request(app)
-      .post('/api/v1/posts')
-      .set('Authorization', `Bearer ${accessToken}`)
-      .send({ text: 'idempotent post', clientRequestId: 'retry-key-1' });
-    const second = await request(app)
-      .post('/api/v1/posts')
-      .set('Authorization', `Bearer ${accessToken}`)
-      .send({ text: 'idempotent post', clientRequestId: 'retry-key-1' });
+    const first = await createPostRequest(app, accessToken, { text: 'idempotent post', clientRequestId: 'retry-key-1' });
+    const second = await createPostRequest(app, accessToken, { text: 'idempotent post', clientRequestId: 'retry-key-1' });
 
     expect(first.status).toBe(201);
     expect(second.status).toBe(200);
@@ -62,8 +70,8 @@ describe('Post routes', () => {
     const { app } = buildTestApp();
     const { accessToken } = await registerUser(app);
 
-    const first = await request(app).post('/api/v1/posts').set('Authorization', `Bearer ${accessToken}`).send({ text: 'post one' });
-    const second = await request(app).post('/api/v1/posts').set('Authorization', `Bearer ${accessToken}`).send({ text: 'post two' });
+    const first = await createPostRequest(app, accessToken, { text: 'post one' });
+    const second = await createPostRequest(app, accessToken, { text: 'post two' });
 
     expect(first.status).toBe(201);
     expect(second.status).toBe(201);
@@ -73,12 +81,9 @@ describe('Post routes', () => {
   it('lets the author edit their own post', async () => {
     const { app } = buildTestApp();
     const { accessToken } = await registerUser(app);
-    const createRes = await request(app).post('/api/v1/posts').set('Authorization', `Bearer ${accessToken}`).send({ text: 'original' });
+    const createRes = await createPostRequest(app, accessToken, { text: 'original' });
 
-    const editRes = await request(app)
-      .patch(`/api/v1/posts/${createRes.body.data.id}`)
-      .set('Authorization', `Bearer ${accessToken}`)
-      .send({ text: 'edited' });
+    const editRes = await editPostRequest(app, accessToken, createRes.body.data.id, { text: 'edited' });
 
     expect(editRes.status).toBe(200);
     expect(editRes.body.data.text).toBe('edited');
@@ -89,13 +94,10 @@ describe('Post routes', () => {
     const { app } = buildTestApp();
     const { accessToken: ownerToken } = await registerUser(app);
     const { accessToken: strangerToken } = await registerUser(app, { username: 'stranger', email: 'stranger@example.com' });
-    const createRes = await request(app).post('/api/v1/posts').set('Authorization', `Bearer ${ownerToken}`).send({ text: 'mine' });
+    const createRes = await createPostRequest(app, ownerToken, { text: 'mine' });
     const postId = createRes.body.data.id;
 
-    const editAttempt = await request(app)
-      .patch(`/api/v1/posts/${postId}`)
-      .set('Authorization', `Bearer ${strangerToken}`)
-      .send({ text: 'hijacked' });
+    const editAttempt = await editPostRequest(app, strangerToken, postId, { text: 'hijacked' });
     const deleteAttempt = await request(app).delete(`/api/v1/posts/${postId}`).set('Authorization', `Bearer ${strangerToken}`);
 
     expect(editAttempt.status).toBe(404);
@@ -107,10 +109,23 @@ describe('Post routes', () => {
     expect(stillThere.body.data.text).toBe('mine');
   });
 
+  it('rejects an edit with neither text nor media', async () => {
+    const { app } = buildTestApp();
+    const { accessToken } = await registerUser(app);
+    const createRes = await createPostRequest(app, accessToken, { text: 'original' });
+
+    const res = await request(app)
+      .patch(`/api/v1/posts/${createRes.body.data.id}`)
+      .set('Authorization', `Bearer ${accessToken}`);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('POST_VALIDATION_ERROR');
+  });
+
   it('soft-deletes a post and decrements postsCount, and it no longer appears in listings', async () => {
     const { app } = buildTestApp();
     const { accessToken } = await registerUser(app);
-    const createRes = await request(app).post('/api/v1/posts').set('Authorization', `Bearer ${accessToken}`).send({ text: 'temporary' });
+    const createRes = await createPostRequest(app, accessToken, { text: 'temporary' });
     const postId = createRes.body.data.id;
 
     const deleteRes = await request(app).delete(`/api/v1/posts/${postId}`).set('Authorization', `Bearer ${accessToken}`);
@@ -128,7 +143,7 @@ describe('Post routes', () => {
     const { accessToken } = await registerUser(app);
     for (let i = 0; i < 5; i += 1) {
       // eslint-disable-next-line no-await-in-loop
-      await request(app).post('/api/v1/posts').set('Authorization', `Bearer ${accessToken}`).send({ text: `post ${i}` });
+      await createPostRequest(app, accessToken, { text: `post ${i}` });
     }
 
     const firstPage = await request(app)
@@ -155,7 +170,7 @@ describe('Post routes', () => {
       const { accessToken: ownerToken } = await registerUser(app);
       const { accessToken: strangerToken } = await registerUser(app, { username: 'stranger', email: 'stranger@example.com' });
 
-      await request(app).post('/api/v1/posts').set('Authorization', `Bearer ${ownerToken}`).send({ text: 'secret post' });
+      await createPostRequest(app, ownerToken, { text: 'secret post' });
       await request(app).patch('/api/v1/users/me').set('Authorization', `Bearer ${ownerToken}`).send({ isPrivate: true });
 
       const res = await request(app).get('/api/v1/posts/user/ada').set('Authorization', `Bearer ${strangerToken}`);
@@ -169,13 +184,147 @@ describe('Post routes', () => {
     it('still lets the owner see their own posts once private', async () => {
       const { app } = buildTestApp();
       const { accessToken: ownerToken } = await registerUser(app);
-      await request(app).post('/api/v1/posts').set('Authorization', `Bearer ${ownerToken}`).send({ text: 'secret post' });
+      await createPostRequest(app, ownerToken, { text: 'secret post' });
       await request(app).patch('/api/v1/users/me').set('Authorization', `Bearer ${ownerToken}`).send({ isPrivate: true });
 
       const res = await request(app).get('/api/v1/posts/user/ada').set('Authorization', `Bearer ${ownerToken}`);
 
       expect(res.status).toBe(200);
       expect(res.body.data.posts).toHaveLength(1);
+    });
+  });
+
+  describe('media attachments', () => {
+    it('creates a post with an attached image', async () => {
+      const { app } = buildTestApp();
+      const { accessToken } = await registerUser(app);
+
+      const res = await createPostRequest(app, accessToken, { text: 'look at this' }).attach('media', fakePngBuffer(), {
+        filename: 'photo.png',
+        contentType: 'image/png',
+      });
+
+      expect(res.status).toBe(201);
+      expect(res.body.data.mediaType).toBe('image');
+      expect(res.body.data.mediaUrl).toEqual(expect.any(String));
+    });
+
+    it('creates a post with an attached video', async () => {
+      const { app } = buildTestApp();
+      const { accessToken } = await registerUser(app);
+
+      const res = await createPostRequest(app, accessToken, { text: 'watch this' }).attach('media', fakeMp4Buffer(), {
+        filename: 'clip.mp4',
+        contentType: 'video/mp4',
+      });
+
+      expect(res.status).toBe(201);
+      expect(res.body.data.mediaType).toBe('video');
+    });
+
+    it('rejects a file whose content does not match any supported image/video signature', async () => {
+      const { app } = buildTestApp();
+      const { accessToken } = await registerUser(app);
+
+      const res = await createPostRequest(app, accessToken, { text: 'fake image' }).attach('media', invalidMediaBuffer(), {
+        filename: 'photo.png',
+        contentType: 'image/png', // spoofed — content sniffing must catch this regardless
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('UNSUPPORTED_POST_MEDIA');
+    });
+
+    it('rejects an image over the image size limit even though it is under the multer-level (video) ceiling', async () => {
+      const { app } = buildTestApp(); // test env: IMAGE_MAX_BYTES=5000, VIDEO_MAX_BYTES=10000
+      const { accessToken } = await registerUser(app);
+
+      const res = await createPostRequest(app, accessToken, { text: 'big image' }).attach('media', fakePngBuffer(6000), {
+        filename: 'photo.png',
+        contentType: 'image/png',
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('POST_MEDIA_TOO_LARGE');
+    });
+
+    it('rejects a file over the hard multer-level size ceiling', async () => {
+      const { app } = buildTestApp();
+      const { accessToken } = await registerUser(app);
+
+      const res = await createPostRequest(app, accessToken, { text: 'huge file' }).attach('media', fakeMp4Buffer(11000), {
+        filename: 'clip.mp4',
+        contentType: 'video/mp4',
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('POST_MEDIA_TOO_LARGE');
+    });
+
+    it('does not re-upload media on a clientRequestId replay', async () => {
+      const { app, fakeS3 } = buildTestApp();
+      const { accessToken } = await registerUser(app);
+
+      const first = await createPostRequest(app, accessToken, { text: 'once', clientRequestId: 'media-retry-1' }).attach(
+        'media',
+        fakePngBuffer(),
+        { filename: 'photo.png', contentType: 'image/png' },
+      );
+      expect(first.status).toBe(201);
+      const uploadsAfterFirst = fakeS3.send.mock.calls.length;
+
+      const second = await createPostRequest(app, accessToken, { text: 'once', clientRequestId: 'media-retry-1' }).attach(
+        'media',
+        fakePngBuffer(),
+        { filename: 'photo.png', contentType: 'image/png' },
+      );
+
+      expect(second.status).toBe(200);
+      expect(second.body.data.mediaUrl).toBe(first.body.data.mediaUrl);
+      expect(fakeS3.send.mock.calls.length).toBe(uploadsAfterFirst); // no new S3 call for the replay
+    });
+
+    it('replaces post media on edit and deletes the old object only after the DB commit', async () => {
+      const { app, fakeS3 } = buildTestApp();
+      const { accessToken } = await registerUser(app);
+
+      const createRes = await createPostRequest(app, accessToken, { text: 'v1' }).attach('media', fakePngBuffer(), {
+        filename: 'photo.png',
+        contentType: 'image/png',
+      });
+      const oldUrl = createRes.body.data.mediaUrl;
+      fakeS3.send.mockClear();
+
+      const editRes = await editPostRequest(app, accessToken, createRes.body.data.id, {}).attach(
+        'media',
+        fakeMp4Buffer(),
+        { filename: 'clip.mp4', contentType: 'video/mp4' },
+      );
+
+      expect(editRes.status).toBe(200);
+      expect(editRes.body.data.mediaType).toBe('video');
+      expect(editRes.body.data.mediaUrl).not.toBe(oldUrl);
+
+      const deleteCalls = fakeS3.send.mock.calls.filter((call) => call[0].constructor.name === 'DeleteObjectCommand');
+      expect(deleteCalls).toHaveLength(1);
+      expect(oldUrl).toContain(deleteCalls[0][0].input.Key);
+    });
+
+    it('keeps existing media untouched when an edit only changes text', async () => {
+      const { app, fakeS3 } = buildTestApp();
+      const { accessToken } = await registerUser(app);
+
+      const createRes = await createPostRequest(app, accessToken, { text: 'v1' }).attach('media', fakePngBuffer(), {
+        filename: 'photo.png',
+        contentType: 'image/png',
+      });
+      fakeS3.send.mockClear();
+
+      const editRes = await editPostRequest(app, accessToken, createRes.body.data.id, { text: 'v2' });
+
+      expect(editRes.status).toBe(200);
+      expect(editRes.body.data.mediaUrl).toBe(createRes.body.data.mediaUrl);
+      expect(fakeS3.send).not.toHaveBeenCalled();
     });
   });
 });

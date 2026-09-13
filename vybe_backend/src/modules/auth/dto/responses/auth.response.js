@@ -17,7 +17,10 @@ function toAuthenticatedUserDTO(user) {
     username: user.username,
     email: user.email,
     authProvider: user.authProvider,
-    avatarUrl: user.avatarUrl,
+    profilePhotoUrl: user.profilePhotoUrl,
+    // Only present for Google-linked accounts — mirrors bepay's GlobalUserDTO convention of
+    // conditionally including the provider id rather than always sending it as null.
+    ...(user.googleId ? { googleId: user.googleId } : {}),
   };
 }
 

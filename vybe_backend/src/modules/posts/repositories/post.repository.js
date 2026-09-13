@@ -17,7 +17,15 @@ class PostRepository {
   }
 
   findVisibleById(postId) {
-    return Post.findOne({ _id: postId, isDeleted: false }).populate('author', 'username name avatarUrl isPrivate isActive');
+    return Post.findOne({ _id: postId, isDeleted: false }).populate(
+      'author',
+      'username name profilePhotoUrl isPrivate isActive',
+    );
+  }
+
+  /** Combined-predicate ownership check with no mutation — used to fail fast (and cheaply) before an expensive media upload. */
+  findOwnedById(postId, authorId) {
+    return Post.findOne({ _id: postId, author: authorId, isDeleted: false });
   }
 
   /** Combined-predicate: a mutation only ever succeeds if the caller owns the post. Returns null for "not found or not yours" — deliberately ambiguous. */

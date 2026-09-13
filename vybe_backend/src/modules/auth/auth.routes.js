@@ -2,7 +2,7 @@ const { Router } = require('express');
 const asyncHandler = require('../../middlewares/asyncHandler');
 const { validate } = require('../../middlewares/validate.middleware');
 const { authLimiter } = require('../../middlewares/rateLimit.middleware');
-const { registerSchema, loginSchema, googleAuthSchema } = require('./validations/auth.validation');
+const { registerSchema, loginSchema, googleAuthSchema, refreshTokenSchema, logoutSchema } = require('./validations/auth.validation');
 
 function buildAuthRoutes(container) {
   const router = Router();
@@ -11,8 +11,8 @@ function buildAuthRoutes(container) {
   router.post('/register', authLimiter, validate(registerSchema, 'body'), asyncHandler(controller.register));
   router.post('/login', authLimiter, validate(loginSchema, 'body'), asyncHandler(controller.login));
   router.post('/google', authLimiter, validate(googleAuthSchema, 'body'), asyncHandler(controller.google));
-  router.post('/refresh', authLimiter, asyncHandler(controller.refresh));
-  router.post('/logout', asyncHandler(controller.logout));
+  router.post('/refresh', authLimiter, validate(refreshTokenSchema, 'body'), asyncHandler(controller.refresh));
+  router.post('/logout', validate(logoutSchema, 'body'), asyncHandler(controller.logout));
 
   return router;
 }

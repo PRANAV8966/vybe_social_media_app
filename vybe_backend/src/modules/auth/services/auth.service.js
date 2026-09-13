@@ -144,7 +144,7 @@ class AuthService {
               email: profile.email,
               authProvider: 'google',
               googleId: profile.googleId,
-              avatarUrl: profile.avatarUrl,
+              profilePhotoUrl: profile.profilePhotoUrl,
             },
             session,
           );
