@@ -1,0 +1,146 @@
+name: CI/CD
+
+# Every push/PR runs the test job. Only a push to main (i.e. a merged
+# commit) that passes tests goes on to deploy — a PR, or a push to any
+# other branch, only ever runs `test`.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Lets you re-trigger a deploy on demand (e.g. to retry after fixing a
+  # server-side issue) without needing a new commit.
+  workflow_dispatch: {}
+
+# A new push supersedes an in-flight test run for the same branch — no
+# point finishing CI for a commit that's already been replaced. Deploys
+# get their own, separate concurrency group further down (queued, never
+# cancelled mid-way — see that job's comment).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    env:
+      # mongodb-memory-server downloads a real mongod binary on first use.
+      # Left at its own default, that download lands under node_modules/.cache
+      # — which `npm ci` wipes and rebuilds on every run, so it would never
+      # actually survive between CI runs. Pointing it here (outside
+      # node_modules) and caching this exact path below means the ~100MB
+      # download only happens once, not on every single run.
+      MONGOMS_DOWNLOAD_DIR: ${{ github.workspace }}/.cache/mongodb-binaries
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          # Reads the `engines.node` field from package.json directly, so
+          # this never silently drifts out of sync with what the app
+          # actually declares it needs.
+          node-version-file: package.json
+          cache: npm
+
+      - name: Cache MongoDB Memory Server binary
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.MONGOMS_DOWNLOAD_DIR }}
+          # Keyed on package-lock.json: a mongodb-memory-server version bump
+          # changes the lockfile hash, which changes the key, which forces a
+          # fresh download instead of reusing a stale/incompatible binary.
+          key: mongodb-binaries-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            mongodb-binaries-${{ runner.os }}-
+
+      - name: Install dependencies
+        # `ci`, not `install` — fails instead of silently drifting if
+        # package.json and package-lock.json are ever out of sync, and never
+        # writes to the lockfile.
+        run: npm ci
+
+      - name: Run test suite
+        # No manual env vars needed here: tests/helpers/testEnv.js (loaded via
+        # jest.config.js's setupFiles) sets every value src/config/env.js's
+        # Joi schema requires, and tests/helpers/db.js spins up its own
+        # MongoMemoryReplSet rather than reading MONGO_URI at all.
+        run: npm test
+
+      - name: Audit dependencies (report only, non-blocking)
+        # Informational, not a gate: as of this writing there is one known
+        # high-severity advisory in a transitive dependency of pm2
+        # (js-yaml), unrelated to this app's own code, that would otherwise
+        # fail every run. Remove `continue-on-error` once that's resolved
+        # upstream (or replaced) if you want this to start blocking merges.
+        run: npm audit --audit-level=high
+        continue-on-error: true
+
+  deploy:
+    name: Deploy to production
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Requires a "production" environment to exist under
+    # Settings → Environments, with DEPLOY_HOST / DEPLOY_USER / DEPLOY_SSH_KEY
+    # / DEPLOY_PATH (and DEPLOY_PORT, optional) added as its secrets — scopes
+    # these credentials to only this job, and lets you optionally require a
+    # manual approval before it runs (Settings → Environments → production →
+    # "Required reviewers").
+    environment: production
+    concurrency:
+      # A second push landing while a deploy is still running WAITS for it
+      # to finish rather than cancelling it mid-way — cancelling partway
+      # through `git reset --hard` + `pm2 reload` could leave the server on
+      # a half-updated, inconsistent checkout.
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - name: Deploy over SSH (fetch latest main, reinstall, reload PM2)
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          # Forwards this GitHub Actions env var into the remote shell as a
+          # real environment variable — the alternative (interpolating
+          # ${{ secrets.DEPLOY_PATH }} directly into the script text below)
+          # works too, but keeping secrets out of the literal script string
+          # is the safer habit.
+          envs: DEPLOY_PATH
+          command_timeout: 10m
+          # Stop at the first failing command instead of ploughing on with a
+          # broken deploy (e.g. running pm2 reload after `npm ci` failed).
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd "$DEPLOY_PATH"
+
+            # The server's checkout is a disposable mirror of origin/main —
+            # this intentionally discards any local drift (it should never
+            # be edited by hand). .env and anything else listed in
+            # .gitignore is untouched by design: secrets are provisioned
+            # once, manually, during initial server setup, never by this
+            # workflow.
+            git fetch --all --prune
+            git reset --hard origin/main
+
+            # Production-only install — this process never runs the test
+            # suite or needs jest/supertest/mongodb-memory-server/nodemon.
+            npm ci --omit=dev
+
+            # New/changed Mongoose indexes (e.g. a schema added since the
+            # last deploy) are created automatically on connect — Mongoose's
+            # autoIndex default handles this, no manual migration step needed.
+            npm run pm2:start
+            pm2 save
+
+            # Fails the step (and therefore the job) if the process isn't
+            # actually online after the reload, instead of reporting success
+            # on a silently-crashed deploy.
+            pm2 describe vybe-backend | grep -q "status.*online"
