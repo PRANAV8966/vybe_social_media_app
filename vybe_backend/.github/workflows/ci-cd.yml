@@ -81,7 +81,10 @@ jobs:
   deploy:
     name: Deploy to production
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Runs on a push to main, OR a manual re-run via workflow_dispatch (also
+    # only from main) — without the second clause, the workflow_dispatch
+    # trigger above would let you start a run but silently skip this job.
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     # Requires a "production" environment to exist under
     # Settings → Environments, with DEPLOY_HOST / DEPLOY_USER / DEPLOY_SSH_KEY
