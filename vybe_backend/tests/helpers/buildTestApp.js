@@ -2,6 +2,8 @@ const Container = require('../../src/container/Container');
 const { registerUsersModule } = require('../../src/modules/users/user.module');
 const { registerAuthModule } = require('../../src/modules/auth/auth.module');
 const { registerPostsModule } = require('../../src/modules/posts/post.module');
+const { registerFollowModule } = require('../../src/modules/follow/follow.module');
+const { registerChatModule } = require('../../src/modules/chat/chat.module');
 const { createApp } = require('../../src/app');
 const { ProfilePhotoStorage } = require('../../src/modules/users/storage/profilePhotoStorage');
 const { PostMediaStorage } = require('../../src/modules/posts/storage/postMediaStorage');
@@ -24,7 +26,9 @@ function buildTestApp({ googleVerifier, fakeS3 = createFakeS3Client() } = {}) {
   const container = new Container();
   registerUsersModule(container);
   registerAuthModule(container);
+  registerFollowModule(container);
   registerPostsModule(container);
+  registerChatModule(container);
 
   if (googleVerifier) {
     container.registerInstance('googleTokenVerifier', googleVerifier);

@@ -24,6 +24,8 @@ const schema = Joi.object({
   GENERAL_RATE_LIMIT_MAX: Joi.number().integer().positive().default(120),
   UPLOAD_RATE_LIMIT_WINDOW_MS: Joi.number().integer().positive().default(900000),
   UPLOAD_RATE_LIMIT_MAX: Joi.number().integer().positive().default(30),
+  CHAT_MESSAGE_RATE_LIMIT_WINDOW_MS: Joi.number().integer().positive().default(60000),
+  CHAT_MESSAGE_RATE_LIMIT_MAX: Joi.number().integer().positive().default(60),
 
   LOGIN_MAX_FAILED_ATTEMPTS: Joi.number().integer().positive().default(5),
   LOGIN_LOCK_DURATION_MS: Joi.number().integer().positive().default(900000),
@@ -71,6 +73,8 @@ const env = {
     generalMax: envVars.GENERAL_RATE_LIMIT_MAX,
     uploadWindowMs: envVars.UPLOAD_RATE_LIMIT_WINDOW_MS,
     uploadMax: envVars.UPLOAD_RATE_LIMIT_MAX,
+    chatMessageWindowMs: envVars.CHAT_MESSAGE_RATE_LIMIT_WINDOW_MS,
+    chatMessageMax: envVars.CHAT_MESSAGE_RATE_LIMIT_MAX,
   },
 
   login: {

@@ -43,4 +43,19 @@ const uploadLimiter = rateLimit({
   message: { success: false, error: { code: 'TOO_MANY_REQUESTS', message: 'Too many uploads, please slow down.' } },
 });
 
-module.exports = { authLimiter, generalLimiter, uploadLimiter };
+/**
+ * Message-send-specific limiter — chat's REST write path has no other rate
+ * control of its own, and a hot 1:1 loop (or a buggy client retrying without
+ * backoff) can otherwise write to Mongo far faster than a person actually
+ * types. Keyed by IP like the others; the per-user follow-gating check
+ * already bounds *who* can be messaged, this bounds *how fast*.
+ */
+const chatMessageLimiter = rateLimit({
+  windowMs: env.rateLimit.chatMessageWindowMs,
+  limit: env.rateLimit.chatMessageMax,
+  standardHeaders: 'draft-8',
+  legacyHeaders: false,
+  message: { success: false, error: { code: 'TOO_MANY_REQUESTS', message: 'Too many messages, please slow down.' } },
+});
+
+module.exports = { authLimiter, generalLimiter, uploadLimiter, chatMessageLimiter };
