@@ -100,7 +100,11 @@ class MessageService {
     conversation.lastMessageText = content;
     conversation.lastMessageAt = message.createdAt;
     conversation.lastMessageBy = senderId;
-    if (isPeerOnline) {
+    // Gated on the DB write actually succeeding, not just on isPeerOnline —
+    // otherwise a failed (logged-and-swallowed) watermark update would still
+    // have the API response claim "delivered" while the DB says "sent",
+    // which a subsequent GET would then contradict.
+    if (isPeerOnline && deliveredUpdate) {
       const peerState = conversation.participantState.find((s) => String(s.user) === String(peerId));
       if (peerState) peerState.lastDeliveredAt = message.createdAt;
     }

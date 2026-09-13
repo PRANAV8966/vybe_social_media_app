@@ -107,4 +107,31 @@ describe('ConversationRepository', () => {
     const secondPage = await repository.listByUser(alice, { cursor, limit: 1 });
     expect(secondPage[0]._id.toString()).toBe(c1._id.toString());
   });
+
+  it('paginates correctly across the transition from real-dated to never-messaged (null) conversations, with no duplicates or skips', async () => {
+    const withMessage = await repository.create(newConversationData(alice, bob));
+    await repository.updatePreview(withMessage._id, { text: 'hi', at: new Date('2026-01-01T00:00:00Z'), by: alice });
+    const empty1 = await repository.create(newConversationData(alice, carol));
+    const daveId = new mongoose.Types.ObjectId();
+    const empty2 = await repository.create(newConversationData(alice, daveId));
+
+    const seen = [];
+    let cursor = null;
+    for (let i = 0; i < 5; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      const page = await repository.listByUser(alice, { cursor, limit: 1 });
+      const hasMore = page.length > 1;
+      const items = hasMore ? page.slice(0, 1) : page;
+      seen.push(...items.map((c) => c._id.toString()));
+      if (!hasMore) break;
+      cursor = encodeConversationCursor(items[0]);
+    }
+
+    // Every conversation appears exactly once across the full walk, most-recently-active first.
+    expect(seen).toEqual(
+      expect.arrayContaining([withMessage._id.toString(), empty1._id.toString(), empty2._id.toString()]),
+    );
+    expect(new Set(seen).size).toBe(seen.length); // no duplicates
+    expect(seen[0]).toBe(withMessage._id.toString()); // the only real-dated one sorts first
+  });
 });

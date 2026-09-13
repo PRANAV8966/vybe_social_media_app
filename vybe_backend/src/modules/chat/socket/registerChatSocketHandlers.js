@@ -10,6 +10,19 @@ function isValidId(value) {
 }
 
 /**
+ * Never destructure a socket payload directly in a handler signature — a
+ * client emitting a literal `null` (valid JSON, easy to send by accident or
+ * on purpose) throws past a default-parameter guard (`= {}` only covers
+ * `undefined`, not `null`), and an exception thrown synchronously inside a
+ * plain `socket.on()` listener is not caught by Socket.IO/Express the way an
+ * Express request handler's would be. This normalizes any payload shape to a
+ * safe string-or-undefined first.
+ */
+function extractConversationId(payload) {
+  return payload && typeof payload === 'object' ? payload.conversationId : undefined;
+}
+
+/**
  * Wires the realtime side of chat onto an existing Socket.IO server. REST
  * (chat.routes.js) remains the only path that persists anything — every
  * handler here either reads, or calls into the exact same
@@ -47,19 +60,22 @@ function registerChatSocketHandlers(io, container) {
       }),
     );
 
-    socket.on('conversation:leave', ({ conversationId } = {}) => {
+    socket.on('conversation:leave', (payload) => {
+      const conversationId = extractConversationId(payload);
       if (isValidId(conversationId)) {
         socket.leave(conversationRoom(conversationId));
       }
     });
 
-    socket.on('typing:start', ({ conversationId } = {}) => {
+    socket.on('typing:start', (payload) => {
+      const conversationId = extractConversationId(payload);
       if (isValidId(conversationId) && socket.rooms.has(conversationRoom(conversationId))) {
         socket.to(conversationRoom(conversationId)).emit('typing', { conversationId, userId, isTyping: true });
       }
     });
 
-    socket.on('typing:stop', ({ conversationId } = {}) => {
+    socket.on('typing:stop', (payload) => {
+      const conversationId = extractConversationId(payload);
       if (isValidId(conversationId) && socket.rooms.has(conversationRoom(conversationId))) {
         socket.to(conversationRoom(conversationId)).emit('typing', { conversationId, userId, isTyping: false });
       }

@@ -14,7 +14,7 @@ async function buildTestServer(options) {
   const { app, container, fakeS3 } = buildTestApp(options);
 
   const httpServer = http.createServer(app);
-  const io = new Server(httpServer, { cors: { origin: '*' } });
+  const io = new Server(httpServer, { cors: { origin: '*' }, connectionStateRecovery: {} });
   container.resolve('chatGateway').attachIo(io);
   registerChatSocketHandlers(io, container);
 

@@ -40,6 +40,13 @@ async function start() {
   const httpServer = http.createServer(app);
   const io = new Server(httpServer, {
     cors: { origin: env.clientOrigins },
+    // Replays events missed during a brief disconnect (default: up to 2
+    // minutes) using the in-memory adapter's own buffer — no application
+    // code needed. `skipMiddlewares: true` (the default) means a recovered
+    // connection does NOT re-run socketAuthMiddleware; this is intentional
+    // and bounded — it only applies to the same already-authenticated
+    // session resuming within the recovery window, never a new handshake.
+    connectionStateRecovery: {},
   });
   container.resolve('chatGateway').attachIo(io);
   registerChatSocketHandlers(io, container);
