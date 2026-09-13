@@ -327,4 +327,152 @@ describe('Post routes', () => {
       expect(fakeS3.send).not.toHaveBeenCalled();
     });
   });
+
+  describe('likes', () => {
+    function setLikeState(app, token, postId, liked) {
+      return request(app).put(`/api/v1/posts/${postId}/like`).set('Authorization', `Bearer ${token}`).send({ liked });
+    }
+
+    async function follow(app, token, targetUsername) {
+      return request(app).post(`/api/v1/follow/${targetUsername}`).set('Authorization', `Bearer ${token}`);
+    }
+
+    it('rejects an unauthenticated like attempt', async () => {
+      const { app } = buildTestApp();
+      const res = await request(app).put('/api/v1/posts/507f1f77bcf86cd799439011/like').send({ liked: true });
+      expect(res.status).toBe(401);
+    });
+
+    it('rejects a malformed postId and a missing "liked" field', async () => {
+      const { app } = buildTestApp();
+      const { accessToken } = await registerUser(app);
+
+      const badId = await setLikeState(app, accessToken, 'not-an-object-id', true);
+      expect(badId.status).toBe(400);
+      expect(badId.body.error.code).toBe('VALIDATION_ERROR');
+
+      const createRes = await createPostRequest(app, accessToken, { text: 'target' });
+      const missingBody = await request(app)
+        .put(`/api/v1/posts/${createRes.body.data.id}/like`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({});
+      expect(missingBody.status).toBe(400);
+      expect(missingBody.body.error.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('returns 404 for a non-existent post', async () => {
+      const { app } = buildTestApp();
+      const { accessToken } = await registerUser(app);
+      const res = await setLikeState(app, accessToken, '507f1f77bcf86cd799439011', true);
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('POST_NOT_FOUND');
+    });
+
+    it('likes a post, is idempotent on a repeat like, and unlikes it back to zero', async () => {
+      const { app } = buildTestApp();
+      const { accessToken } = await registerUser(app);
+      const createRes = await createPostRequest(app, accessToken, { text: 'likeable' });
+      const postId = createRes.body.data.id;
+      expect(createRes.body.data.isLiked).toBe(false); // fresh post, nobody has liked it yet
+
+      const first = await setLikeState(app, accessToken, postId, true);
+      expect(first.status).toBe(200);
+      expect(first.body.data).toEqual({ liked: true, likesCount: 1 });
+
+      const replay = await setLikeState(app, accessToken, postId, true);
+      expect(replay.status).toBe(200);
+      expect(replay.body.data).toEqual({ liked: true, likesCount: 1 }); // no double count
+
+      const getRes = await request(app).get(`/api/v1/posts/id/${postId}`).set('Authorization', `Bearer ${accessToken}`);
+      expect(getRes.body.data.isLiked).toBe(true);
+      expect(getRes.body.data.likesCount).toBe(1);
+
+      const unlike = await setLikeState(app, accessToken, postId, false);
+      expect(unlike.status).toBe(200);
+      expect(unlike.body.data).toEqual({ liked: false, likesCount: 0 });
+
+      const unlikeReplay = await setLikeState(app, accessToken, postId, false);
+      expect(unlikeReplay.status).toBe(200);
+      expect(unlikeReplay.body.data).toEqual({ liked: false, likesCount: 0 }); // idempotent, never goes negative
+    });
+
+    it('allows a self-like', async () => {
+      const { app } = buildTestApp();
+      const { accessToken } = await registerUser(app);
+      const createRes = await createPostRequest(app, accessToken, { text: 'my own post' });
+
+      const res = await setLikeState(app, accessToken, createRes.body.data.id, true);
+      expect(res.status).toBe(200);
+      expect(res.body.data.liked).toBe(true);
+    });
+
+    it('tracks isLiked independently per viewer', async () => {
+      const { app } = buildTestApp();
+      const { accessToken: ownerToken } = await registerUser(app);
+      const { accessToken: strangerToken } = await registerUser(app, { username: 'stranger', email: 'stranger@example.com' });
+      const createRes = await createPostRequest(app, ownerToken, { text: 'shared post' });
+      const postId = createRes.body.data.id;
+
+      await setLikeState(app, ownerToken, postId, true);
+
+      const ownerView = await request(app).get(`/api/v1/posts/id/${postId}`).set('Authorization', `Bearer ${ownerToken}`);
+      const strangerView = await request(app).get(`/api/v1/posts/id/${postId}`).set('Authorization', `Bearer ${strangerToken}`);
+
+      expect(ownerView.body.data.isLiked).toBe(true);
+      expect(strangerView.body.data.isLiked).toBe(false);
+      expect(strangerView.body.data.likesCount).toBe(1); // the count itself is shared/global
+    });
+
+    it('reflects isLiked correctly across a paginated post list (batched lookup, no N+1)', async () => {
+      const { app } = buildTestApp();
+      const { accessToken } = await registerUser(app);
+      const first = await createPostRequest(app, accessToken, { text: 'one' });
+      const second = await createPostRequest(app, accessToken, { text: 'two' });
+      await setLikeState(app, accessToken, second.body.data.id, true);
+
+      const listRes = await request(app).get('/api/v1/posts/user/ada').set('Authorization', `Bearer ${accessToken}`);
+      const byId = Object.fromEntries(listRes.body.data.posts.map((p) => [p.id, p]));
+
+      expect(byId[first.body.data.id].isLiked).toBe(false);
+      expect(byId[second.body.data.id].isLiked).toBe(true);
+    });
+
+    it('returns 404 (not a leak) when trying to like a post behind a private account you do not follow', async () => {
+      const { app } = buildTestApp();
+      const { accessToken: ownerToken } = await registerUser(app);
+      const { accessToken: strangerToken } = await registerUser(app, { username: 'stranger', email: 'stranger@example.com' });
+      const createRes = await createPostRequest(app, ownerToken, { text: 'private post' });
+      await request(app).patch('/api/v1/users/me').set('Authorization', `Bearer ${ownerToken}`).send({ isPrivate: true });
+
+      const res = await setLikeState(app, strangerToken, createRes.body.data.id, true);
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('POST_NOT_FOUND');
+    });
+
+    it('allows liking a private account post once you follow them', async () => {
+      const { app } = buildTestApp();
+      const { accessToken: ownerToken } = await registerUser(app);
+      const { accessToken: followerToken } = await registerUser(app, { username: 'follower', email: 'follower@example.com' });
+      const createRes = await createPostRequest(app, ownerToken, { text: 'private post' });
+      await request(app).patch('/api/v1/users/me').set('Authorization', `Bearer ${ownerToken}`).send({ isPrivate: true });
+      await follow(app, followerToken, 'ada');
+
+      const res = await setLikeState(app, followerToken, createRes.body.data.id, true);
+      expect(res.status).toBe(200);
+      expect(res.body.data.liked).toBe(true);
+    });
+
+    it('does not delete the post when unliking, and does not error unliking a post nobody liked', async () => {
+      const { app } = buildTestApp();
+      const { accessToken } = await registerUser(app);
+      const createRes = await createPostRequest(app, accessToken, { text: 'never liked' });
+
+      const res = await setLikeState(app, accessToken, createRes.body.data.id, false);
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual({ liked: false, likesCount: 0 });
+
+      const stillThere = await request(app).get(`/api/v1/posts/id/${createRes.body.data.id}`).set('Authorization', `Bearer ${accessToken}`);
+      expect(stillThere.status).toBe(200);
+    });
+  });
 });

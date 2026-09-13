@@ -53,6 +53,27 @@ class PostRepository {
     }
     return Post.find(filter).sort({ _id: -1 }).limit(limit + 1);
   }
+
+  /**
+   * Atomic counter update, returning the post's authoritative post-update
+   * count in the same round trip — callers (LikeService) need the fresh
+   * value for their response and shouldn't have to re-fetch separately.
+   *
+   * For a negative delta, the query itself guards `likesCount > 0` — verified
+   * directly (not assumed) that Mongoose's `runValidators` does NOT enforce
+   * the schema's `min: 0` under a raw `$inc`: a manual test against a real
+   * mongod confirmed `$inc: -1` on a likesCount of 0 happily produces -1 even
+   * with `runValidators: true` set. This filter is the actual guard; the
+   * schema's `min: 0` is honored on `.save()` paths only. LikeService's own
+   * decrement is already only reachable after a *confirmed* Like deletion
+   * (so likesCount should never legitimately be 0 there), but this makes the
+   * floor a real, unconditional invariant rather than one that merely holds
+   * "as long as nothing else ever goes wrong."
+   */
+  incrementLikesCount(postId, delta, session) {
+    const filter = delta < 0 ? { _id: postId, likesCount: { $gt: 0 } } : { _id: postId };
+    return Post.findOneAndUpdate({ ...filter }, { $inc: { likesCount: delta } }, { session, returnDocument: 'after' });
+  }
 }
 
 module.exports = { PostRepository };

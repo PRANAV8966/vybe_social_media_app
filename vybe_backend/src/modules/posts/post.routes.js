@@ -10,11 +10,13 @@ const {
   postIdParamSchema,
   usernameParamSchema,
   listQuerySchema,
+  setLikeStateSchema,
 } = require('./validations/post.validation');
 
 function buildPostRoutes(container) {
   const router = Router();
   const controller = container.resolve('postController');
+  const likeController = container.resolve('likeController');
 
   router.use(authGuard);
 
@@ -32,6 +34,12 @@ function buildPostRoutes(container) {
     asyncHandler(controller.edit),
   );
   router.delete('/:postId', validate(postIdParamSchema, 'params'), asyncHandler(controller.remove));
+  router.put(
+    '/:postId/like',
+    validate(postIdParamSchema, 'params'),
+    validate(setLikeStateSchema, 'body'),
+    asyncHandler(likeController.setLikeState),
+  );
   router.get('/id/:postId', validate(postIdParamSchema, 'params'), asyncHandler(controller.getById));
   router.get(
     '/user/:username',

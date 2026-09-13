@@ -31,4 +31,17 @@ const listQuerySchema = Joi.object({
   limit: Joi.number().integer().min(1).max(50).default(20),
 });
 
-module.exports = { createPostSchema, editPostSchema, postIdParamSchema, usernameParamSchema, listQuerySchema };
+// PUT "set my like state" — a boolean body, not a toggle, so a client retry
+// after a timeout is always safe (see LikeService.setLikeState).
+const setLikeStateSchema = Joi.object({
+  liked: Joi.boolean().required(),
+});
+
+module.exports = {
+  createPostSchema,
+  editPostSchema,
+  postIdParamSchema,
+  usernameParamSchema,
+  listQuerySchema,
+  setLikeStateSchema,
+};

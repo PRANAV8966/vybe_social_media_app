@@ -30,10 +30,17 @@ function toPostDTO(post) {
     mediaUrl: post.mediaUrl,
     mediaType: post.mediaType,
     likesCount: post.likesCount,
+    // Undefined (not just falsy) whenever the caller didn't attach it — e.g.
+    // a code path with no requester context — rather than silently lying "false".
+    isLiked: post.isLiked === undefined ? undefined : Boolean(post.isLiked),
     isEdited: Boolean(post.editedAt),
     createdAt: post.createdAt,
     updatedAt: post.updatedAt,
   };
 }
 
-module.exports = { success, error, toPostDTO };
+function toLikeStateDTO({ liked, likesCount }) {
+  return { liked, likesCount };
+}
+
+module.exports = { success, error, toPostDTO, toLikeStateDTO };

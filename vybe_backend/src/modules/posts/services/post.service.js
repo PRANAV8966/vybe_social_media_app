@@ -1,19 +1,22 @@
 const mongoose = require('mongoose');
 const { PostNotFoundError, PostValidationError } = require('../errors/post.errors');
 const { UserNotFoundError } = require('../../users/errors/user.errors');
+const { resolveVisibility } = require('../utils/postVisibility');
 
 function isDuplicateKeyError(err) {
   return err && err.code === 11000;
 }
 
 class PostService {
-  constructor(postRepository, userRepository, userStatsRepository, postMediaStorage, followRepository = null) {
+  constructor(postRepository, userRepository, userStatsRepository, postMediaStorage, followRepository = null, likeRepository = null) {
     this.postRepository = postRepository;
     this.userRepository = userRepository;
     this.userStatsRepository = userStatsRepository;
     this.postMediaStorage = postMediaStorage;
-    // Optional, wired in once the Follow module exists (phase 2) — see _isFollowing().
+    // Optional, wired in once the Follow module exists (phase 2) — see postVisibility.js.
     this.followRepository = followRepository;
+    // Optional too, same reasoning — without it, isLiked simply stays undefined on every post.
+    this.likeRepository = likeRepository;
   }
 
   /**
@@ -27,7 +30,10 @@ class PostService {
       if (existing) {
         // A genuine replay never re-uploads — avoids both wasted storage and
         // the (client-bug-only) risk of silently overwriting the original
-        // media with different bytes under the same key.
+        // media with different bytes under the same key. The replayed post
+        // may have accumulated likes since its original creation (self-likes
+        // are allowed), so this is worth a real lookup, not an assumed false.
+        existing.isLiked = await this._isLikedBy(authorId, existing._id);
         return { post: existing, created: false };
       }
     }
@@ -71,6 +77,9 @@ class PostService {
       await session.endSession();
     }
 
+    // A post that was just inserted in this same call cannot already have a
+    // like on it — no query needed to know that with certainty.
+    post.isLiked = this.likeRepository ? false : undefined;
     return { post, created: true };
   }
 
@@ -113,6 +122,9 @@ class PostService {
       await this.postMediaStorage.deleteByUrl(existing.mediaUrl);
     }
 
+    // Self-likes are allowed, so an edited post may already carry one from
+    // its author — compute it for real rather than assuming false.
+    post.isLiked = await this._isLikedBy(authorId, post._id);
     return post;
   }
 
@@ -134,15 +146,22 @@ class PostService {
   }
 
   async getPostById({ postId, requesterId }) {
-    const post = await this.postRepository.findVisibleById(postId);
+    // Independent reads — likeRepository.exists() doesn't depend on the
+    // visibility check's outcome, and its result is simply discarded if the
+    // post turns out not to be visible (never exposed to the caller either way).
+    const [post, isLiked] = await Promise.all([
+      this.postRepository.findVisibleById(postId),
+      this._isLikedBy(requesterId, postId),
+    ]);
     if (!post || !post.author || !post.author.isActive) {
       throw new PostNotFoundError();
     }
 
-    const visibility = await this._resolveVisibility(post.author, requesterId);
+    const visibility = await resolveVisibility(this.followRepository, post.author, requesterId);
     if (!visibility.canView) {
       throw new PostNotFoundError();
     }
+    post.isLiked = isLiked;
     return post;
   }
 
@@ -152,7 +171,7 @@ class PostService {
       throw new UserNotFoundError();
     }
 
-    const visibility = await this._resolveVisibility(targetUser, requesterId);
+    const visibility = await resolveVisibility(this.followRepository, targetUser, requesterId);
     if (!visibility.canView) {
       return { gated: true, isFollowing: visibility.isFollowing, posts: [], nextCursor: null };
     }
@@ -161,30 +180,25 @@ class PostService {
     const hasMore = results.length > limit;
     const posts = hasMore ? results.slice(0, limit) : results;
     const nextCursor = hasMore ? posts[posts.length - 1]._id.toString() : null;
+
+    if (this.likeRepository && requesterId && posts.length > 0) {
+      const likedSet = await this.likeRepository.findLikedAmong(
+        requesterId,
+        posts.map((p) => p._id),
+      );
+      posts.forEach((p) => {
+        p.isLiked = likedSet.has(p._id.toString());
+      });
+    }
+
     return { gated: false, isFollowing: visibility.isFollowing, posts, nextCursor };
   }
 
-  /**
-   * Posts from a private account are visible only to the owner or an
-   * approved follower. The Follow collection doesn't exist until phase 2, so
-   * until followRepository is wired in, private accounts are visible to their
-   * owner only — a safe (fail-closed) default, not a bug: nobody can be a
-   * "follower" of anyone yet.
-   */
-  async _resolveVisibility(targetUser, requesterId) {
-    const isOwner = Boolean(requesterId) && String(targetUser._id) === String(requesterId);
-    if (isOwner || !targetUser.isPrivate) {
-      return { canView: true, isFollowing: false };
+  async _isLikedBy(userId, postId) {
+    if (!this.likeRepository || !userId) {
+      return undefined;
     }
-    const isFollowing = await this._isFollowing(requesterId, targetUser._id);
-    return { canView: isFollowing, isFollowing };
-  }
-
-  async _isFollowing(followerId, followingId) {
-    if (!this.followRepository || !followerId) {
-      return false;
-    }
-    return this.followRepository.exists(followerId, followingId);
+    return this.likeRepository.exists(userId, postId);
   }
 }
 

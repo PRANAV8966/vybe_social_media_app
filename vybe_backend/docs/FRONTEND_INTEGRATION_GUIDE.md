@@ -320,6 +320,7 @@ Post create/edit are **always `multipart/form-data`**, even for text-only posts 
 | `DELETE /posts/:postId` | — | Owner only, soft-delete |
 | `GET /posts/id/:postId` | — | Respects private-account gating |
 | `GET /posts/user/:username?cursor=&limit=` | — | See private-account response shape below |
+| `PUT /posts/:postId/like` | `{ "liked": true \| false }` | Idempotent — see §8.1 |
 
 Media field name is **`media`** (not `file`/`image`). Allowed: PNG/JPEG/WebP images, MP4/WebM/QuickTime(.mov) videos — validated by real byte-content sniffing server-side, not by filename or the `Content-Type` you send, so don't bother spoofing it and don't rely on client-side extension checks as the actual gate (they're just UX, the server is the real check).
 
@@ -328,10 +329,32 @@ Post object shape:
 {
   "id": "...", "author": { "id": "...", "username": "...", "name": "...", "profilePhotoUrl": "" },
   "text": "...", "mediaUrl": null, "mediaType": null,
-  "likesCount": 0, "isEdited": false, "createdAt": "...", "updatedAt": "..."
+  "likesCount": 0, "isLiked": false, "isEdited": false, "createdAt": "...", "updatedAt": "..."
 }
 ```
-(`likesCount` exists in the schema now but there is currently no like/unlike endpoint — don't build a like button against this API yet.)
+`isLiked` reflects **the requesting user's own** like state on that post — present on every post object returned anywhere (create, edit, get-by-id, list), computed server-side, never something you derive client-side.
+
+### 8.1 Like / unlike
+
+```
+PUT /posts/:postId/like
+{ "liked": true }
+```
+
+One endpoint, one method, for both liking and unliking — send the **target state**, not an action. This is deliberately not a toggle: a toggle endpoint isn't safely retryable (a client retry after a dropped response would flip the state back, silently reversing the user's actual intent), whereas sending `{ liked: true }` twice is always a safe no-op.
+
+Response — `200` either way:
+```json
+{
+  "success": true,
+  "message": "Post liked",
+  "data": { "liked": true, "likesCount": 43 },
+  "timestamp": "2026-09-13T09:00:00.000Z"
+}
+```
+`likesCount` in this response is the **authoritative, just-updated count** — use it to update the UI directly instead of re-fetching the post. Liking your own post is allowed (no restriction). Liking a post behind a private account you don't follow returns `404 POST_NOT_FOUND` — same ambiguous convention as everywhere else (never reveals whether the post exists).
+
+No dedicated rate limit on this route — it rides the general limiter (§5), same as Follow.
 
 **Private-account response** for `GET /posts/user/:username` when the viewer doesn't own the account and isn't allowed to see it:
 ```json
